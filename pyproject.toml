@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pokemon-nuzlocke-agent-harness"
+version = "0.1.0"
+description = "Screenshot-only Pokemon agent with durable, evidence-backed memory"
+requires-python = ">=3.10"
+dependencies = ["jsonschema>=4.23,<5", "Pillow>=10.4,<13"]
+
+[project.scripts]
+pokemon-harness = "pokemon_harness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

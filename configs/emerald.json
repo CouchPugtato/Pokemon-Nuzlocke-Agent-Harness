@@ -1,0 +1,36 @@
+{
+  "run_dir": "../runs/emerald-001",
+  "objective": "Start a Pokemon Emerald Nuzlocke. Obtain a starter and reach Oldale Town safely.",
+  "max_action_frames": 60,
+  "recent_turns": 6,
+  "memory_limit": 24,
+  "ledger_limit": 24,
+  "rules": [
+    "Catch only the first eligible wild encounter per named area; eligibility begins after receiving Poke Balls.",
+    "Fainted Pokemon are permanently retired and must never be used again.",
+    "Nickname every captured Pokemon.",
+    "Do not reload to change an outcome. Stop if the entire usable party faints.",
+    "No duplicate or shiny exceptions are enabled in this run."
+  ],
+  "model": {
+    "base_url": "http://127.0.0.1:1234/v1",
+    "name": "REPLACE_WITH_LOADED_VISION_MODEL_ID",
+    "temperature": 0.1,
+    "max_tokens": 2000,
+    "timeout_seconds": 180,
+    "api_key_env": "LM_STUDIO_API_KEY"
+  },
+  "emulator": {
+    "backend": "vbam",
+    "window_title": "VisualBoyAdvance-M",
+    "initial_state": "paused",
+    "pause_key": "CTRL+P",
+    "fps": 60,
+    "crop": null,
+    "buttons": {
+      "A": "E", "B": "Q", "START": "SHIFT", "SELECT": "CAPSLOCK",
+      "UP": "W", "DOWN": "S", "LEFT": "A", "RIGHT": "D",
+      "L": "R", "R": "T"
+    }
+  }
+}

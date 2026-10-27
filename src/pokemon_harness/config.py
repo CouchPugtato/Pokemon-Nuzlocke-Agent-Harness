@@ -1,0 +1,33 @@
+"""JSON configuration; relative paths are relative to the config file."""
+
+import json
+from pathlib import Path
+
+
+def load_config(path):
+    path = Path(path).resolve()
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("Configuration must be an object")
+    required = {"run_dir", "objective", "model", "emulator"}
+    if not required.issubset(value):
+        raise ValueError(f"Configuration needs: {', '.join(sorted(required))}")
+    if not isinstance(value["objective"], str) or not value["objective"].strip():
+        raise ValueError("objective must be nonempty text")
+    if not isinstance(value["model"], dict) or not isinstance(value["emulator"], dict):
+        raise ValueError("model and emulator must be objects")
+    value["run_dir"] = str((path.parent / value["run_dir"]).resolve())
+    value.setdefault("max_action_frames", 60)
+    value.setdefault("recent_turns", 6)
+    value.setdefault("memory_limit", 24)
+    value.setdefault("ledger_limit", 24)
+    value.setdefault("rules", ["First eligible encounter per area may be caught.",
+                                "Fainted Pokemon are permanently retired.",
+                                "Nickname every captured Pokemon."])
+    for key, lower, upper in [("max_action_frames", 1, 120), ("recent_turns", 1, 20),
+                              ("memory_limit", 1, 100), ("ledger_limit", 1, 100)]:
+        if type(value[key]) is not int or not lower <= value[key] <= upper:
+            raise ValueError(f"{key} must be an integer between {lower} and {upper}")
+    if not isinstance(value["rules"], list) or not all(isinstance(x, str) for x in value["rules"]):
+        raise ValueError("rules must be a list of text instructions")
+    return value

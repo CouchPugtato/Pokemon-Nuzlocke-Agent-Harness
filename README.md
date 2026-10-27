@@ -1,1 +1,1 @@
-# Pok-mon-Nuzlocke-Agent-Harness
+# Pokemon-Nuzlocke-Agent-Harness
