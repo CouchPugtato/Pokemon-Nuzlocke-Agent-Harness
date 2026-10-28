@@ -2,6 +2,8 @@
   "run_dir": "../runs/emerald-001",
   "objective": "Start a Pokemon Emerald Nuzlocke. Obtain a starter and reach Oldale Town safely.",
   "max_action_frames": 60,
+  "max_sequence_length": 15,
+  "sequence_delay_ms": 500,
   "recent_turns": 6,
   "memory_limit": 24,
   "ledger_limit": 24,

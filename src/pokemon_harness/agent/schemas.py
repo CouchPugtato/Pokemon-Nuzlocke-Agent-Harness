@@ -25,6 +25,14 @@ MEMORY_SEARCH_SCHEMA = obj({
     "limit": {"type": "integer", "minimum": 1, "maximum": 10},
 })
 
+MOVE_SCHEMA = obj({
+    "kind": {"type": "string", "enum": ["press", "wait"]},
+    "buttons": {"type": "array", "items": {"type": "string", "enum": BUTTONS},
+                "uniqueItems": True, "maxItems": 3},
+    "hold_frames": {"type": "integer", "minimum": 1, "maximum": 120},
+    "settle_frames": {"type": "integer", "minimum": 0, "maximum": 120},
+})
+
 
 DECISION_SCHEMA = obj({
     "observation_id": {"type": "integer", "minimum": 1},
@@ -39,6 +47,7 @@ DECISION_SCHEMA = obj({
         "settle_frames": {"type": "integer", "minimum": 0, "maximum": 120},
     }),
     "expected_result": text(),
+    "additional_actions": {"type": "array", "items": MOVE_SCHEMA, "maxItems": 19},
     "memory_search": {"anyOf": [{"type": "null"}, MEMORY_SEARCH_SCHEMA]},
     "memory_updates": {"type": "array", "maxItems": 12, "items": obj({
         "category": {"type": "string", "enum": MEMORY_CATEGORIES},
@@ -61,18 +70,18 @@ DECISION_SCHEMA = obj({
 })
 
 
-def validate_decision(value, observation_id, max_frames=60):
+def validate_decision(value, observation_id, max_frames=60, max_sequence_length=5):
     Draft202012Validator(DECISION_SCHEMA).validate(value)
     if value["observation_id"] != observation_id:
         raise ValueError("Decision refers to a stale observation")
+    actions = [value["action"], *value["additional_actions"]]
+    if len(actions) > max_sequence_length:
+        raise ValueError(f"Action sequence exceeds configured limit of {max_sequence_length} moves")
+    if value["action"]["kind"] in {"stop", "search_memory"} and value["additional_actions"]:
+        raise ValueError("Stop and search_memory decisions cannot queue controller actions")
+    for action in actions:
+        validate_action(action, max_frames)
     action = value["action"]
-    if max(action["hold_frames"], action["settle_frames"]) > max_frames:
-        raise ValueError(f"Action exceeds configured limit of {max_frames} frames")
-    if (action["kind"] == "press") != bool(action["buttons"]):
-        raise ValueError("Only press actions may contain buttons; press needs a button")
-    for pair in ({"UP", "DOWN"}, {"LEFT", "RIGHT"}):
-        if pair.issubset(action["buttons"]):
-            raise ValueError("Opposite directions cannot be pressed together")
     search = value["memory_search"]
     if (action["kind"] == "search_memory") != (search is not None):
         raise ValueError("Only search_memory actions must supply a memory_search request")
@@ -85,3 +94,13 @@ def validate_decision(value, observation_id, max_frames=60):
         if (event["type"] == "correction") != bool(event["corrects_event_key"]):
             raise ValueError("Only corrections must reference an existing event key")
     return value
+
+
+def validate_action(action, max_frames):
+    if max(action["hold_frames"], action["settle_frames"]) > max_frames:
+        raise ValueError(f"Action exceeds configured limit of {max_frames} frames")
+    if (action["kind"] == "press") != bool(action["buttons"]):
+        raise ValueError("Only press actions may contain buttons; press needs a button")
+    for pair in ({"UP", "DOWN"}, {"LEFT", "RIGHT"}):
+        if pair.issubset(action["buttons"]):
+            raise ValueError("Opposite directions cannot be pressed together")

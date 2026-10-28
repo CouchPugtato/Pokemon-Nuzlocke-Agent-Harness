@@ -38,5 +38,6 @@ class DemoAgent:
                                 "location": "Synthetic demo", "basis": "observed", "confidence": "high", "status": "active"}],
             "events": [],
             "memory_search": None,
+            "additional_actions": [],
         }
         return value, {"backend": "scripted demo", "decision": value}

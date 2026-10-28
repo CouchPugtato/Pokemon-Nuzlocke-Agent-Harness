@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 from .agent.prompts import messages
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
@@ -36,10 +37,11 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
     current_image, observation_id, timing = _capture(memory, run_dir, emulator)
     completed = 0
+    sequence_images = []
     for _ in range(turns):
         decision, current_image, previous_image, observation_id, timing = _choose_decision(
             config, emulator, agent, memory, run_dir, current_image, previous_image,
-            observation_id, timing, recovered)
+            observation_id, timing, recovered, sequence_images)
         try:
             turn_id = memory.plan(observation_id, decision)
         except Exception as exc:
@@ -57,22 +59,33 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
             return {"completed_actions": completed, "reason": "agent_stop"}
 
         memory.status(turn_id, "executing")
+        actions = [decision["action"], *decision["additional_actions"]]
+        sequence_images = []
         try:
-            execution = emulator.execute(decision["action"])
-            # Capture after EVERY action, including the last allowed action.
-            result_image, result_id, result_timing = _capture(memory, run_dir, emulator)
-            memory.note("action_result", {"turn_id": turn_id, "observation_id": result_id,
-                                          "execution": execution})
+            for index, action in enumerate(actions, 1):
+                if index > 1:
+                    # All buttons are already released. This extra delay is in
+                    # addition to the previous move's settle/capture overhead.
+                    time.sleep(config.get("sequence_delay_ms", 250) / 1000)
+                memory.step_status(turn_id, index, "executing")
+                execution = emulator.execute(action)
+                result_image, result_id, result_timing = _capture(memory, run_dir, emulator)
+                memory.note("action_result", {"turn_id": turn_id, "observation_id": result_id,
+                                              "execution": execution, "step_index": index,
+                                              "sequence_length": len(actions)})
+                memory.step_status(turn_id, index, "completed", result_id, execution)
+                sequence_images.append({"step_index": index, "observation_id": result_id,
+                                        "image": result_image})
+                completed += 1
+                effective = execution.get("effective_action", action) if execution else action
+                print(f"Turn {turn_id}, move {index}/{len(actions)}: input sent / {effective} "
+                      f"-> observation {result_id} (game response not yet verified)", flush=True)
+                previous_image, current_image, observation_id = current_image, result_image, result_id
+                timing = result_timing
             memory.status(turn_id, "completed")
         except BaseException as exc:
             memory.status(turn_id, "unknown", str(exc) or type(exc).__name__)
             raise
-        completed += 1
-        effective = execution.get("effective_action", decision["action"]) if execution else decision["action"]
-        print(f"Turn {turn_id}: input sent / {decision['scene']} / {effective} -> observation {result_id} "
-              "(game response not yet verified)", flush=True)
-        previous_image, current_image, observation_id = current_image, result_image, result_id
-        timing = result_timing
         recovered = []
     return {"completed_actions": completed, "reason": "turn_limit"}
 
@@ -85,7 +98,7 @@ def _capture(memory, run_dir, emulator):
 
 
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
-                     previous_image, observation_id, timing, recovered):
+                     previous_image, observation_id, timing, recovered, sequence_images=None):
     """Read-only searches do not execute inputs or consume controller turns."""
     budget = config.get("memory_search_rounds", 3)
     search_results = []
@@ -97,6 +110,10 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "observation_id": observation_id,
             "objective": config["objective"], "rules": config["rules"],
             "action_limit_frames": config["max_action_frames"],
+            "max_sequence_length": config.get("max_sequence_length", 5),
+            "sequence_delay_ms": config.get("sequence_delay_ms", 250),
+            "sequence_observations": [{key: value for key, value in frame.items() if key != "image"}
+                                      for frame in (sequence_images or [])],
             "minimum_press_frames": config["emulator"].get("min_hold_frames", 6)
                 if config["emulator"]["backend"] in {"mgba", "vbam"} else 1,
             "timing": timing,
@@ -113,7 +130,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                 for record in bundle["results"]]) for bundle in search_results],
             "recent_turns": recent, "recovery": recovered,
             "warning": loop_warning(memory.hashes()),
-            "instruction": "Interpret the current screenshot. Search memory if needed, or update evidenced facts and choose one short action.",
+            "instruction": "Interpret the screenshots. Search memory if needed, or update evidenced facts and choose a bounded sequence of moves.",
         }
         traces = run_dir / "turns"
         traces.mkdir(exist_ok=True)
@@ -122,9 +139,10 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
         try:
             print(f"Observation {observation_id}: requesting model decision "
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
-            decision, trace = agent.decide(messages(context, current_image, previous_image))
+            decision, trace = agent.decide(messages(context, current_image, previous_image, sequence_images))
             write_json(prefix.with_suffix(".model.json"), trace)
-            validate_decision(decision, observation_id, config["max_action_frames"])
+            validate_decision(decision, observation_id, config["max_action_frames"],
+                              config.get("max_sequence_length", 5))
             if decision["action"]["kind"] != "search_memory":
                 return decision, current_image, previous_image, observation_id, timing
             if search_round == budget:

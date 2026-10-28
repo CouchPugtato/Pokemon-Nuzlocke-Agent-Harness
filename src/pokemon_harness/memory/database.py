@@ -37,6 +37,11 @@ class Memory:
                 observation_id INTEGER NOT NULL REFERENCES observations(id), created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS notes(
                 id INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS action_steps(
+                turn_id INTEGER NOT NULL REFERENCES turns(id), step_index INTEGER NOT NULL,
+                action TEXT NOT NULL, status TEXT NOT NULL, observation_id INTEGER REFERENCES observations(id),
+                execution TEXT, error TEXT, updated_at TEXT NOT NULL,
+                PRIMARY KEY(turn_id, step_index));
         """)
 
     def initialize(self, config):
@@ -62,6 +67,7 @@ class Memory:
             for row in rows:
                 self.connection.execute("UPDATE turns SET status='unknown', error=?, finished_at=? WHERE id=?",
                                         ("Process ended before completion was recorded", now(), row["id"]))
+                self._cancel_steps(row["id"], "Process ended before sequence completion")
         return [dict(row) for row in rows]
 
     def plan(self, observation_id, decision):
@@ -86,7 +92,28 @@ class Memory:
             cursor = self.connection.execute(
                 "INSERT INTO turns(observation_id,decision,status,created_at) VALUES(?,?,'planned',?)",
                 (observation_id, encode(decision), now()))
+            if decision["action"]["kind"] in {"press", "wait"}:
+                for index, action in enumerate([decision["action"], *decision.get("additional_actions", [])], 1):
+                    self.connection.execute(
+                        "INSERT INTO action_steps(turn_id,step_index,action,status,updated_at) VALUES(?,?,?,'planned',?)",
+                        (cursor.lastrowid, index, encode(action), now()))
         return cursor.lastrowid
+
+    def _cancel_steps(self, turn_id, error):
+        self.connection.execute(
+            "UPDATE action_steps SET status=CASE WHEN status='executing' THEN 'unknown' ELSE 'cancelled' END, "
+            "error=?,updated_at=? WHERE turn_id=? AND status IN ('planned','executing')",
+            (error, now(), turn_id))
+
+    def step_status(self, turn_id, index, status, observation_id=None, execution=None):
+        if status not in {"executing", "completed"}:
+            raise ValueError("Unsupported step status")
+        with self.connection:
+            self.connection.execute(
+                "UPDATE action_steps SET status=?,observation_id=?,execution=?,updated_at=? "
+                "WHERE turn_id=? AND step_index=?",
+                (status, observation_id, encode(execution) if execution is not None else None,
+                 now(), turn_id, index))
 
     def status(self, turn_id, status, error=None):
         if status not in {"executing", "completed", "unknown", "stopped", "blocked"}:
@@ -94,6 +121,8 @@ class Memory:
         with self.connection:
             self.connection.execute("UPDATE turns SET status=?,error=?,finished_at=? WHERE id=?",
                                     (status, error, now() if status != "executing" else None, turn_id))
+            if status in {"unknown", "blocked", "stopped"}:
+                self._cancel_steps(turn_id, error)
 
     def note(self, kind, payload):
         with self.connection:
@@ -109,12 +138,17 @@ class Memory:
         reports = self.connection.execute(
             "SELECT payload FROM notes WHERE kind='action_result' ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         execution = {value["turn_id"]: value.get("execution")
-                     for value in (json.loads(row[0]) for row in reports)}
+                     for value in (json.loads(row[0]) for row in reversed(reports))}
         result = []
         for row in reversed(rows):
             value = dict(row)
             value["decision"] = json.loads(value["decision"])
             value["execution"] = execution.get(value["id"])
+            steps = self.connection.execute(
+                "SELECT * FROM action_steps WHERE turn_id=? ORDER BY step_index", (value["id"],)).fetchall()
+            value["steps"] = [dict(step, action=json.loads(step["action"]),
+                                   execution=json.loads(step["execution"]) if step["execution"] else None)
+                              for step in steps]
             result.append(value)
         return result
 

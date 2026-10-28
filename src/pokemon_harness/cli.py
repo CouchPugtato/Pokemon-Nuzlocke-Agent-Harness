@@ -32,7 +32,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     play = commands.add_parser("run", help="Run bounded model turns; reuse run_dir to resume")
     play.add_argument("--config", required=True, type=Path)
-    play.add_argument("--turns", type=int, default=20)
+    play.add_argument("--turns", type=int, default=20,
+                      help="Maximum model plans; each can contain multiple controller moves")
     capture = commands.add_parser("capture", help="Save a live screenshot to verify cropping and bindings")
     capture.add_argument("--config", required=True, type=Path)
     capture.add_argument("--output", type=Path, default=Path("capture.png"))
