@@ -33,7 +33,7 @@ def main(argv=None):
     play = commands.add_parser("run", help="Run bounded model turns; reuse run_dir to resume")
     play.add_argument("--config", required=True, type=Path)
     play.add_argument("--turns", type=int, default=20)
-    capture = commands.add_parser("capture", help="Save a paused screenshot to verify cropping and bindings")
+    capture = commands.add_parser("capture", help="Save a live screenshot to verify cropping and bindings")
     capture.add_argument("--config", required=True, type=Path)
     capture.add_argument("--output", type=Path, default=Path("capture.png"))
     controls = commands.add_parser("input-test", help="Test one controller button without LM Studio")
@@ -86,7 +86,7 @@ def main(argv=None):
                     emulator.close()
         return 0
     except KeyboardInterrupt:
-        print("Interrupted. Check emulator pause state before resuming.", file=sys.stderr)
+        print("Interrupted. Held keys are released; the emulator keeps running.", file=sys.stderr)
         return 130
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)

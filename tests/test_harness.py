@@ -187,24 +187,19 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(selected[0]["category"], "objective")
         self.assertEqual(selected[0]["age_observations"], 9)
 
-    def test_desktop_input_failure_releases_and_pauses(self):
+    def test_desktop_input_failure_releases_keys_without_frontend_commands(self):
         # Exercise the real execute/finally logic without generating OS input.
         class FakeMGBA(MGBA):
             def __init__(self):
-                self.config = {"pause_key": "F9"}
+                self.config = {}
                 self.bindings = {"UP": "UP"}
-                self.running = False
                 self.held = set()
                 self.released = False
-                self.paused = False
                 self.fps = 60
                 self.min_hold_frames = 6
                 self.input_mode = "scancode"
 
             def _check_focus(self):
-                pass
-
-            def _tap(self, binding):
                 pass
 
             def _key(self, key, up=False):
@@ -215,16 +210,12 @@ class HarnessTests(unittest.TestCase):
                 self.held.clear()
                 self.released = True
 
-            def _pause(self):
-                self.running = False
-                self.paused = True
-
         emulator = FakeMGBA()
         with self.assertRaises(RuntimeError):
             emulator.execute(decision()["action"])
         self.assertTrue(emulator.released)
-        self.assertTrue(emulator.paused)
         self.assertFalse(emulator.held)
+        emulator.close()
 
     def test_win32_input_structure_matches_platform_abi(self):
         import ctypes
@@ -241,7 +232,7 @@ class HarnessTests(unittest.TestCase):
         for backend, target in [("mgba", "pokemon_harness.emulator.mgba.MGBA"),
                                 ("vbam", "pokemon_harness.emulator.vbam.VBAM")]:
             with self.subTest(backend=backend), patch(target) as factory:
-                settings = {"backend": backend, "window_title": "Custom title", "pause_key": "CTRL+P"}
+                settings = {"backend": backend, "window_title": "Custom title"}
                 result = emulator_for({"emulator": settings}, self.root / "config.json")
                 factory.assert_called_once_with(settings)
                 self.assertIs(result, factory.return_value)
@@ -255,14 +246,14 @@ class HarnessTests(unittest.TestCase):
     def test_runner_uses_capture_timing_for_vbam(self):
         class DesktopFixture(ReplayEmulator):
             def capture(self):
-                return Capture(super().capture().image, "paused; approximate desktop timing")
+                return Capture(super().capture().image, "live; game continues during inference")
 
         config = dict(self.config, emulator={"backend": "vbam"})
         emulator = DesktopFixture(create_images(self.root / "fixtures"))
         run(config, emulator, DemoAgent(), turns=1)
         context_path = next((Path(config["run_dir"]) / "turns").glob("*.context.json"))
         context = json.loads(context_path.read_text(encoding="utf-8"))
-        self.assertEqual(context["timing"], "paused; approximate desktop timing")
+        self.assertEqual(context["timing"], "live; game continues during inference")
 
     def test_lmstudio_http_contract(self):
         received = []
@@ -312,9 +303,8 @@ class HarnessTests(unittest.TestCase):
 
         class FakeDesktop(MGBA):
             def __init__(self):
-                self.config = {"pause_key": "F9"}
+                self.config = {}
                 self.bindings = {"START": "SHIFT"}
-                self.running = False
                 self.held = set()
                 self.fps = 60
                 self.min_hold_frames = 6
@@ -325,11 +315,8 @@ class HarnessTests(unittest.TestCase):
             def _check_focus(self):
                 pass
 
-            def _tap(self, binding):
-                self.events.append((binding, "tap", clock.value))
-
             def _focus_game_area(self):
-                self.events.append(("canvas", "focus", self.running))
+                self.events.append(("canvas", "focus", clock.value))
 
             def _key(self, key, up=False):
                 self.events.append((key, "up" if up else "down", clock.value))
@@ -348,8 +335,8 @@ class HarnessTests(unittest.TestCase):
             self.assertGreaterEqual(up - down, 0.1)
             self.assertEqual(report["effective_action"]["hold_frames"], 6)
             self.assertEqual(action["hold_frames"], 1)
-            self.assertFalse(emulator.running)
-            self.assertIn(("canvas", "focus", True), emulator.events)
+            self.assertEqual(report["game_timing"], "continuous")
+            self.assertEqual([e[0] for e in emulator.events if e[1] in {"down", "up"}], [0x10, 0x10])
             report = emulator.execute(dict(action, kind="wait", buttons=[]))
             self.assertEqual(report["effective_action"]["hold_frames"], 1)
             self.assertFalse(emulator.held)
@@ -386,39 +373,29 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue((directory / report["after"]).is_file())
 
 
-    def test_vbam_uses_actual_pause_state_even_when_initial_assumption_is_wrong(self):
-        for actual_running in [True, False]:
-            with self.subTest(actual_running=actual_running):
-                emulator = VBAM.__new__(VBAM)
-                emulator.running = not actual_running
-                actual = SimpleNamespace(running=actual_running, commands=[])
-                emulator._menu_running = lambda: actual.running
-                emulator._find_pause_menu = lambda: (123, 0)
+    def test_capture_and_close_do_not_access_keyboard_or_menu_controls(self):
+        from PIL import Image
 
-                def post(hwnd, message, command, argument):
-                    actual.commands.append((message, command))
-                    actual.running = not actual.running
-                    return 1
+        def rect(_hwnd, result):
+            result._obj.right, result._obj.bottom = 240, 160
+            return 1
 
-                emulator.hwnd = 456
-                emulator.user32 = SimpleNamespace(GetMenuItemID=lambda *_: 789, PostMessageW=post)
-                emulator._set_running(True)
-                self.assertTrue(actual.running)
-                self.assertTrue(emulator.running)
-                self.assertEqual(len(actual.commands), 0 if actual_running else 1)
-                emulator._pause()
-                self.assertFalse(actual.running)
-                self.assertFalse(emulator.running)
-
-    def test_vbam_menu_checkbox_decodes_paused_and_rejects_disabled_state(self):
-        emulator = VBAM.__new__(VBAM)
-        emulator._find_pause_menu = lambda: (123, 0)
-        for flags, expected_running in [(8, False), (0, True)]:
-            emulator.user32 = SimpleNamespace(GetMenuState=lambda *_: flags)
-            self.assertEqual(emulator._menu_running(), expected_running)
-        emulator.user32 = SimpleNamespace(GetMenuState=lambda *_: 3)
-        with self.assertRaisesRegex(RuntimeError, "unavailable or disabled"):
-            emulator._menu_running()
+        for backend in (MGBA, VBAM):
+            with self.subTest(backend=backend.__name__):
+                emulator = backend.__new__(backend)
+                emulator.config = {}
+                emulator.hwnd = 1
+                emulator.held = set()
+                emulator._focus = lambda: None
+                emulator._check_focus = lambda: None
+                # Only capture geometry APIs are available. Any keyboard/menu
+                # operation during capture or shutdown must fail this test.
+                emulator.user32 = SimpleNamespace(GetClientRect=rect, ClientToScreen=lambda *_: 1)
+                with patch("PIL.ImageGrab.grab", return_value=Image.new("RGB", (240, 160))):
+                    capture = emulator.capture()
+                self.assertIn("game continues during inference", capture.timing)
+                self.assertTrue(capture.image.startswith(b"\x89PNG"))
+                emulator.close()
 
 
 if __name__ == "__main__":

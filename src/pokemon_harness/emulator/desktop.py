@@ -1,7 +1,7 @@
 """Shared Windows desktop backend. Screenshots + keyboard only; no game memory.
 
-Frame counts are translated into wall-clock input durations. Configure a dedicated
-pause toggle in the emulator; the frontend remains responsive while inference runs.
+Frame counts are translated into wall-clock input durations. The game continues
+running during capture and inference; this backend never changes its pause state.
 """
 
 import ctypes
@@ -16,7 +16,6 @@ from .interface import Capture
 class WindowsDesktopEmulator:
     display_name = "Emulator"
     default_window_title = "Emulator"
-    pause_menu_label = None
 
     def __init__(self, config):
         if os.name != "nt":
@@ -25,15 +24,12 @@ class WindowsDesktopEmulator:
         self.fps = config.get("fps", 60)
         if not isinstance(self.fps, (float, int)) or not 1 <= self.fps <= 240:
             raise ValueError("emulator.fps must be between 1 and 240")
-        if config.get("initial_state") not in {"paused", "running"}:
-            raise ValueError("Set emulator.initial_state to the actual paused/running state")
         self.min_hold_frames = config.get("min_hold_frames", 6)
         if type(self.min_hold_frames) is not int or not 1 <= self.min_hold_frames <= 120:
             raise ValueError("emulator.min_hold_frames must be an integer between 1 and 120")
         self.input_mode = config.get("input_mode", "scancode")
         if self.input_mode not in {"scancode", "virtual_key"}:
             raise ValueError("emulator.input_mode must be scancode or virtual_key")
-        self.running = config["initial_state"] == "running"
         self.held = set()
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._configure_api()
@@ -41,11 +37,8 @@ class WindowsDesktopEmulator:
         from ..agent.schemas import BUTTONS
         if set(self.bindings) != set(BUTTONS):
             raise ValueError("Configure a keyboard binding for every GBA button")
-        for binding in list(self.bindings.values()) + [config["pause_key"]]:
+        for binding in self.bindings.values():
             self._combo(binding)
-        pause = set(self._combo(config["pause_key"]))
-        if any(pause.intersection(self._combo(binding)) for binding in self.bindings.values()):
-            raise ValueError("The pause shortcut must not overlap a game button binding")
         self.hwnd = self._find_window(config.get("window_title", self.default_window_title))
 
     def _configure_api(self):
@@ -63,18 +56,6 @@ class WindowsDesktopEmulator:
         u.SetForegroundWindow.argtypes = [wintypes.HWND]
         u.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         u.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
-        u.GetMenu.argtypes = [wintypes.HWND]
-        u.GetMenu.restype = wintypes.HMENU
-        u.GetSubMenu.argtypes = [wintypes.HMENU, ctypes.c_int]
-        u.GetSubMenu.restype = wintypes.HMENU
-        u.GetMenuItemCount.argtypes = [wintypes.HMENU]
-        u.GetMenuStringW.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.LPWSTR, ctypes.c_int, wintypes.UINT]
-        u.GetMenuState.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.UINT]
-        u.GetMenuState.restype = wintypes.UINT
-        u.GetMenuItemID.argtypes = [wintypes.HMENU, ctypes.c_int]
-        u.GetMenuItemID.restype = wintypes.UINT
-        u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        u.PostMessageW.restype = wintypes.BOOL
         u.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
         u.SetCursorPos.restype = wintypes.BOOL
         u.WindowFromPoint.argtypes = [wintypes.POINT]
@@ -192,59 +173,6 @@ class WindowsDesktopEmulator:
                 raise RuntimeError("Windows rejected mouse-button release")
         time.sleep(0.1)
 
-    def _find_pause_menu(self):
-        """Read emulator frontend UI state only; never inspect game RAM/state."""
-        root = self.user32.GetMenu(self.hwnd)
-
-        def visit(menu):
-            for index in range(self.user32.GetMenuItemCount(menu)):
-                label = ctypes.create_unicode_buffer(256)
-                self.user32.GetMenuStringW(menu, index, label, len(label), 0x400)
-                name = label.value.split("\t")[0].replace("&", "").strip()
-                if name.casefold() == self.pause_menu_label.casefold():
-                    return menu, index
-                submenu = self.user32.GetSubMenu(menu, index)
-                if submenu:
-                    found = visit(submenu)
-                    if found:
-                        return found
-            return None
-
-        found = visit(root) if root else getattr(self, "_pause_menu", None)
-        if not found:
-            raise RuntimeError("Cannot find VBA-M's Pause menu item. Keep the menu bar visible "
-                               "and close all dialogs; pause state cannot be verified.")
-        self._pause_menu = found
-        return found
-
-    def _menu_running(self):
-        menu, index = self._find_pause_menu()
-        flags = self.user32.GetMenuState(menu, index, 0x400)
-        if flags == 0xFFFFFFFF or flags & 3:
-            raise RuntimeError("VBA-M Pause menu is unavailable or disabled. Load a game first.")
-        return not bool(flags & 8)  # MF_CHECKED means explicitly paused
-
-    def _set_running(self, desired):
-        if not self.pause_menu_label:
-            if self.running != desired:
-                self._tap(self.config["pause_key"])
-                self.running = desired
-            return
-        self.running = self._menu_running()
-        if self.running == desired:
-            return
-        menu, index = self._find_pause_menu()
-        command = self.user32.GetMenuItemID(menu, index)
-        if command == 0xFFFFFFFF or not self.user32.PostMessageW(self.hwnd, 0x111, command, 0):
-            raise RuntimeError("Could not dispatch VBA-M's Pause menu command")
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            self.running = self._menu_running()
-            if self.running == desired:
-                return
-            time.sleep(0.02)
-        raise RuntimeError("VBA-M did not confirm its requested pause state; stopping before further game input")
-
     def _keyboard_input(self, key, up=False):
         # Include real scan codes, especially for standalone Shift (GBA Start).
         # Scan-code input follows the physical-key path instead of relying on a
@@ -274,7 +202,7 @@ class WindowsDesktopEmulator:
 
     def _release(self):
         failures = []
-        # Release ordinary keys before modifiers used in pause shortcuts.
+        # Release ordinary keys before modifiers used in compound bindings.
         for key in sorted(self.held, key=lambda k: k in {0x10, 0x11, 0x12}):
             try:
                 self._key(key, up=True)
@@ -283,23 +211,10 @@ class WindowsDesktopEmulator:
         if failures:
             raise RuntimeError("Failed releasing keys: " + "; ".join(failures))
 
-    def _tap(self, binding):
-        try:
-            for key in self._combo(binding):
-                self._key(key)
-            time.sleep(0.06)
-        finally:
-            self._release()
-        time.sleep(0.08)
-
-    def _pause(self):
-        self._set_running(False)
-
     def capture(self):
         from PIL import ImageGrab
 
         self._focus()
-        self._pause()
         rect = wintypes.RECT()
         point = wintypes.POINT(0, 0)
         if not self.user32.GetClientRect(self.hwnd, ctypes.byref(rect)):
@@ -320,26 +235,18 @@ class WindowsDesktopEmulator:
         self._check_focus()
         output = io.BytesIO()
         image.save(output, format="PNG")
-        return Capture(output.getvalue(), "paused screenshot; inputs use approximate wall-clock frame durations")
+        return Capture(output.getvalue(), "live screenshot; game continues during inference; "
+                       "inputs use approximate wall-clock durations")
 
     def execute(self, action):
         self._check_focus()
         if self.config.get("focus_game_area", False):
             self._focus_game_area()
-        if self.running and not self.pause_menu_label:
-            raise RuntimeError("Expected paused emulator before action")
-        # Resume before pressing: controls intended for the game must not overlap
-        # the frontend pause shortcut. Timing includes frontend dispatch overhead.
         effective = dict(action)
         if action["kind"] == "press":
             effective["hold_frames"] = max(action["hold_frames"], self.min_hold_frames)
         started = time.monotonic()
         try:
-            self._set_running(True)
-            # VBA-M Resume() changes child focus. Focus GLCanvas AFTER resume,
-            # otherwise the frontend can receive the key while the game does not.
-            if self.config.get("focus_game_area", False):
-                self._focus_game_area()
             for button in action["buttons"]:
                 for key in self._combo(self.bindings[button]):
                     if key not in self.held:
@@ -354,17 +261,11 @@ class WindowsDesktopEmulator:
                 self._check_focus()
                 time.sleep(min(0.01, max(0, deadline - time.monotonic())))
         finally:
-            try:
-                self._release()
-            finally:
-                self._pause()
+            self._release()
         return {"requested_action": dict(action), "effective_action": effective,
                 "input_mode": self.input_mode, "elapsed_seconds": time.monotonic() - started,
-                "pause_control": "verified frontend menu" if self.pause_menu_label else "configured keyboard toggle",
+                "game_timing": "continuous",
                 "verification": "Input submitted; game response requires screenshot inspection"}
 
     def close(self):
-        try:
-            self._release()
-        finally:
-            self._pause()
+        self._release()
