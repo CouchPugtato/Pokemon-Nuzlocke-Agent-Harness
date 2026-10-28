@@ -35,6 +35,11 @@ Respect minimum_press_frames in the context: shorter presses are extended by the
 desktop controller because the frontend may miss very brief key-down events.
 Resolve uncertainty by looking again or inspecting a menu. Stop if a consequential
 Nuzlocke event cannot be resolved safely. Retired Pokemon must not be used.
+When run rules specify level caps, verify levels and badge progress from screenshots.
+Remember the applicable cap and each Pokemon's last observed level and experience.
+Keep temporarily overleveled Pokemon out of battle as the rules require; do not
+record them as fainted or permanently retired. Recheck eligibility after a confirmed
+badge. Use short plans near a cap to avoid unintended experience gains.
 Use stable, specific memory keys (e.g. party:starter:hp, objective:current).
 Use stable event keys to avoid recording the same encounter, capture or faint twice.
 Corrections append a new event referencing the original key; never erase history.
