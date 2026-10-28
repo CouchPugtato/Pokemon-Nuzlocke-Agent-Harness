@@ -5,6 +5,8 @@ from pathlib import Path
 
 from .agent.lmstudio import LMStudio
 from .config import load_config
+from .agent.schemas import BUTTONS
+from .control.diagnostics import input_test
 from .emulator.interface import ReplayEmulator
 from .memory.database import Memory
 from .runner import run
@@ -34,6 +36,11 @@ def main(argv=None):
     capture = commands.add_parser("capture", help="Save a paused screenshot to verify cropping and bindings")
     capture.add_argument("--config", required=True, type=Path)
     capture.add_argument("--output", type=Path, default=Path("capture.png"))
+    controls = commands.add_parser("input-test", help="Test one controller button without LM Studio")
+    controls.add_argument("--config", required=True, type=Path)
+    controls.add_argument("--button", choices=BUTTONS, default="START")
+    controls.add_argument("--hold-frames", type=int, default=12)
+    controls.add_argument("--settle-frames", type=int, default=45)
     inspect = commands.add_parser("memory", help="Read durable facts and ledger as JSON")
     inspect.add_argument("--run-dir", required=True, type=Path)
     demo = commands.add_parser("demo", help="Offline synthetic loop: no emulator or LM Studio required")
@@ -66,6 +73,9 @@ def main(argv=None):
                 agent = LMStudio(config["model"])
                 emulator = emulator_for(config, args.config)
                 print(json.dumps(run(config, emulator, agent, args.turns)))
+            elif args.command == "input-test":
+                emulator = emulator_for(config, args.config)
+                input_test(config, emulator, args.button, args.hold_frames, args.settle_frames)
             else:
                 emulator = emulator_for(config, args.config)
                 try:

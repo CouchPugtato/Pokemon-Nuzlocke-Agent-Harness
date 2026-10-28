@@ -30,4 +30,8 @@ def load_config(path):
             raise ValueError(f"{key} must be an integer between {lower} and {upper}")
     if not isinstance(value["rules"], list) or not all(isinstance(x, str) for x in value["rules"]):
         raise ValueError("rules must be a list of text instructions")
+    if value["emulator"].get("backend") in {"mgba", "vbam"}:
+        minimum = value["emulator"].get("min_hold_frames", 6)
+        if type(minimum) is not int or not 1 <= minimum <= value["max_action_frames"]:
+            raise ValueError("emulator.min_hold_frames must be between 1 and max_action_frames")
     return value

@@ -44,6 +44,8 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
             "observation_id": observation_id,
             "objective": config["objective"], "rules": config["rules"],
             "action_limit_frames": config["max_action_frames"],
+            "minimum_press_frames": config["emulator"].get("min_hold_frames", 6)
+                if config["emulator"]["backend"] in {"mgba", "vbam"} else 1,
             "timing": timing,
             "memory": retrieve(memory.facts(), config["objective"] + " " + location,
                                observation_id, config["memory_limit"]),
@@ -58,6 +60,8 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
         prefix = traces / f"observation-{observation_id:06d}"
         write_json(prefix.with_suffix(".context.json"), context)
         try:
+            print(f"Observation {observation_id}: requesting model decision "
+                  f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
             decision, trace = agent.decide(messages(context, current_image, previous_image))
             write_json(prefix.with_suffix(".model.json"), trace)
             validate_decision(decision, observation_id, config["max_action_frames"])
@@ -78,16 +82,19 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
 
         memory.status(turn_id, "executing")
         try:
-            emulator.execute(decision["action"])
+            execution = emulator.execute(decision["action"])
             # Capture after EVERY action, including the last allowed action.
             result_image, result_id, result_timing = _capture(memory, run_dir, emulator)
-            memory.note("action_result", {"turn_id": turn_id, "observation_id": result_id})
+            memory.note("action_result", {"turn_id": turn_id, "observation_id": result_id,
+                                          "execution": execution})
             memory.status(turn_id, "completed")
         except BaseException as exc:
             memory.status(turn_id, "unknown", str(exc) or type(exc).__name__)
             raise
         completed += 1
-        print(f"Turn {turn_id}: {decision['scene']} / {decision['action']} -> observation {result_id}")
+        effective = execution.get("effective_action", decision["action"]) if execution else decision["action"]
+        print(f"Turn {turn_id}: input sent / {decision['scene']} / {effective} -> observation {result_id} "
+              "(game response not yet verified)", flush=True)
         previous_image, current_image, observation_id = current_image, result_image, result_id
         timing = result_timing
         recovered = []

@@ -16,6 +16,7 @@ from .interface import Capture
 class WindowsDesktopEmulator:
     display_name = "Emulator"
     default_window_title = "Emulator"
+    pause_menu_label = None
 
     def __init__(self, config):
         if os.name != "nt":
@@ -26,6 +27,12 @@ class WindowsDesktopEmulator:
             raise ValueError("emulator.fps must be between 1 and 240")
         if config.get("initial_state") not in {"paused", "running"}:
             raise ValueError("Set emulator.initial_state to the actual paused/running state")
+        self.min_hold_frames = config.get("min_hold_frames", 6)
+        if type(self.min_hold_frames) is not int or not 1 <= self.min_hold_frames <= 120:
+            raise ValueError("emulator.min_hold_frames must be an integer between 1 and 120")
+        self.input_mode = config.get("input_mode", "scancode")
+        if self.input_mode not in {"scancode", "virtual_key"}:
+            raise ValueError("emulator.input_mode must be scancode or virtual_key")
         self.running = config["initial_state"] == "running"
         self.held = set()
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -56,6 +63,25 @@ class WindowsDesktopEmulator:
         u.SetForegroundWindow.argtypes = [wintypes.HWND]
         u.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         u.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+        u.GetMenu.argtypes = [wintypes.HWND]
+        u.GetMenu.restype = wintypes.HMENU
+        u.GetSubMenu.argtypes = [wintypes.HMENU, ctypes.c_int]
+        u.GetSubMenu.restype = wintypes.HMENU
+        u.GetMenuItemCount.argtypes = [wintypes.HMENU]
+        u.GetMenuStringW.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.LPWSTR, ctypes.c_int, wintypes.UINT]
+        u.GetMenuState.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.UINT]
+        u.GetMenuState.restype = wintypes.UINT
+        u.GetMenuItemID.argtypes = [wintypes.HMENU, ctypes.c_int]
+        u.GetMenuItemID.restype = wintypes.UINT
+        u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        u.PostMessageW.restype = wintypes.BOOL
+        u.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+        u.SetCursorPos.restype = wintypes.BOOL
+        u.WindowFromPoint.argtypes = [wintypes.POINT]
+        u.WindowFromPoint.restype = wintypes.HWND
+        u.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        u.GetAncestor.restype = wintypes.HWND
+        u.IsWindowEnabled.argtypes = [wintypes.HWND]
         try:
             u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
             u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
@@ -86,6 +112,8 @@ class WindowsDesktopEmulator:
         self.KeyboardInput = KeyboardInput
         u.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
         u.SendInput.restype = wintypes.UINT
+        u.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+        u.MapVirtualKeyW.restype = wintypes.UINT
 
     @staticmethod
     def _combo(binding):
@@ -127,21 +155,118 @@ class WindowsDesktopEmulator:
             raise RuntimeError(f"{self.display_name} window is closed or minimized")
         if self.user32.GetForegroundWindow() != self.hwnd:
             raise RuntimeError(f"{self.display_name} lost focus; no further key-down events will be sent")
+        if not self.user32.IsWindowEnabled(self.hwnd):
+            raise RuntimeError("Close the emulator's settings dialog before running controller input")
 
     def _focus(self):
         if self.user32.GetForegroundWindow() != self.hwnd:
             self.user32.SetForegroundWindow(self.hwnd)
             time.sleep(0.15)
         self._check_focus()
+        if self.config.get("focus_game_area", False):
+            self._focus_game_area()
+
+    def _focus_game_area(self):
+        """A foreground frame can still have its toolbar focused rather than GLCanvas."""
+        self._check_focus()
+        rect = wintypes.RECT()
+        point = wintypes.POINT()
+        if not self.user32.GetClientRect(self.hwnd, ctypes.byref(rect)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        point.x, point.y = rect.right // 2, rect.bottom // 2
+        if not self.user32.ClientToScreen(self.hwnd, ctypes.byref(point)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        under_cursor = self.user32.WindowFromPoint(point)
+        if self.user32.GetAncestor(under_cursor, 2) != self.hwnd:
+            raise RuntimeError("Game display is covered by another window; cannot focus it safely")
+        if not self.user32.SetCursorPos(point.x, point.y):
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._check_focus()
+        down, up = self.Input(type=0), self.Input(type=0)
+        down.mi.dwFlags, up.mi.dwFlags = 2, 4
+        try:
+            if self.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(down)) != 1:
+                raise RuntimeError("Windows rejected game-panel focus click")
+        finally:
+            if self.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(up)) != 1:
+                raise RuntimeError("Windows rejected mouse-button release")
+        time.sleep(0.1)
+
+    def _find_pause_menu(self):
+        """Read emulator frontend UI state only; never inspect game RAM/state."""
+        root = self.user32.GetMenu(self.hwnd)
+
+        def visit(menu):
+            for index in range(self.user32.GetMenuItemCount(menu)):
+                label = ctypes.create_unicode_buffer(256)
+                self.user32.GetMenuStringW(menu, index, label, len(label), 0x400)
+                name = label.value.split("\t")[0].replace("&", "").strip()
+                if name.casefold() == self.pause_menu_label.casefold():
+                    return menu, index
+                submenu = self.user32.GetSubMenu(menu, index)
+                if submenu:
+                    found = visit(submenu)
+                    if found:
+                        return found
+            return None
+
+        found = visit(root) if root else getattr(self, "_pause_menu", None)
+        if not found:
+            raise RuntimeError("Cannot find VBA-M's Pause menu item. Keep the menu bar visible "
+                               "and close all dialogs; pause state cannot be verified.")
+        self._pause_menu = found
+        return found
+
+    def _menu_running(self):
+        menu, index = self._find_pause_menu()
+        flags = self.user32.GetMenuState(menu, index, 0x400)
+        if flags == 0xFFFFFFFF or flags & 3:
+            raise RuntimeError("VBA-M Pause menu is unavailable or disabled. Load a game first.")
+        return not bool(flags & 8)  # MF_CHECKED means explicitly paused
+
+    def _set_running(self, desired):
+        if not self.pause_menu_label:
+            if self.running != desired:
+                self._tap(self.config["pause_key"])
+                self.running = desired
+            return
+        self.running = self._menu_running()
+        if self.running == desired:
+            return
+        menu, index = self._find_pause_menu()
+        command = self.user32.GetMenuItemID(menu, index)
+        if command == 0xFFFFFFFF or not self.user32.PostMessageW(self.hwnd, 0x111, command, 0):
+            raise RuntimeError("Could not dispatch VBA-M's Pause menu command")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            self.running = self._menu_running()
+            if self.running == desired:
+                return
+            time.sleep(0.02)
+        raise RuntimeError("VBA-M did not confirm its requested pause state; stopping before further game input")
+
+    def _keyboard_input(self, key, up=False):
+        # Include real scan codes, especially for standalone Shift (GBA Start).
+        # Scan-code input follows the physical-key path instead of relying on a
+        # zero-scan-code virtual key event being translated by the frontend.
+        scan = self.user32.MapVirtualKeyW(key, 4)  # MAPVK_VK_TO_VSC_EX
+        if not scan:
+            raise ValueError(f"Windows could not map virtual key {key:#x} to a scan code")
+        flags = (2 if up else 0) | (1 if scan & 0xFF00 == 0xE000 else 0)
+        physical = self.input_mode == "scancode"
+        if physical:
+            flags |= 8  # KEYEVENTF_SCANCODE
+        value = self.Input(type=1)
+        value.ki = self.KeyboardInput(wVk=0 if physical else key, wScan=scan & 0xFF, dwFlags=flags)
+        return value
 
     def _key(self, key, up=False):
         if not up:
             self._check_focus()
-        flags = (2 if up else 0) | (1 if key in {0x25, 0x26, 0x27, 0x28} else 0)
-        value = self.Input(type=1)
-        value.ki = self.KeyboardInput(wVk=key, dwFlags=flags)
+        value = self._keyboard_input(key, up)
         if self.user32.SendInput(1, ctypes.byref(value), ctypes.sizeof(value)) != 1:
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise RuntimeError(f"Windows rejected keyboard input (error {ctypes.get_last_error()}); "
+                               "check focus and that the emulator and harness have matching privilege levels")
         if up:
             self.held.discard(key)
         else:
@@ -149,10 +274,11 @@ class WindowsDesktopEmulator:
 
     def _release(self):
         failures = []
-        for key in list(self.held):
+        # Release ordinary keys before modifiers used in pause shortcuts.
+        for key in sorted(self.held, key=lambda k: k in {0x10, 0x11, 0x12}):
             try:
                 self._key(key, up=True)
-            except OSError as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 failures.append(str(exc))
         if failures:
             raise RuntimeError("Failed releasing keys: " + "; ".join(failures))
@@ -167,9 +293,7 @@ class WindowsDesktopEmulator:
         time.sleep(0.08)
 
     def _pause(self):
-        if self.running:
-            self._tap(self.config["pause_key"])
-            self.running = False
+        self._set_running(False)
 
     def capture(self):
         from PIL import ImageGrab
@@ -200,18 +324,27 @@ class WindowsDesktopEmulator:
 
     def execute(self, action):
         self._check_focus()
-        if self.running:
+        if self.config.get("focus_game_area", False):
+            self._focus_game_area()
+        if self.running and not self.pause_menu_label:
             raise RuntimeError("Expected paused emulator before action")
         # Resume before pressing: controls intended for the game must not overlap
         # the frontend pause shortcut. Timing includes frontend dispatch overhead.
-        self._tap(self.config["pause_key"])
-        self.running = True
+        effective = dict(action)
+        if action["kind"] == "press":
+            effective["hold_frames"] = max(action["hold_frames"], self.min_hold_frames)
+        started = time.monotonic()
         try:
+            self._set_running(True)
+            # VBA-M Resume() changes child focus. Focus GLCanvas AFTER resume,
+            # otherwise the frontend can receive the key while the game does not.
+            if self.config.get("focus_game_area", False):
+                self._focus_game_area()
             for button in action["buttons"]:
                 for key in self._combo(self.bindings[button]):
                     if key not in self.held:
                         self._key(key)
-            deadline = time.monotonic() + action["hold_frames"] / self.fps
+            deadline = time.monotonic() + effective["hold_frames"] / self.fps
             while time.monotonic() < deadline:
                 self._check_focus()
                 time.sleep(min(0.01, max(0, deadline - time.monotonic())))
@@ -225,6 +358,10 @@ class WindowsDesktopEmulator:
                 self._release()
             finally:
                 self._pause()
+        return {"requested_action": dict(action), "effective_action": effective,
+                "input_mode": self.input_mode, "elapsed_seconds": time.monotonic() - started,
+                "pause_control": "verified frontend menu" if self.pause_menu_label else "configured keyboard toggle",
+                "verification": "Input submitted; game response requires screenshot inspection"}
 
     def close(self):
         try:

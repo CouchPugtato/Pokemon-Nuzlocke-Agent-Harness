@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -11,9 +12,11 @@ from pokemon_harness.agent.prompts import messages
 from pokemon_harness.agent.schemas import validate_decision
 from pokemon_harness.config import load_config
 from pokemon_harness.cli import emulator_for
+from pokemon_harness.control.diagnostics import input_test
 from pokemon_harness.demo import DemoAgent, create_images
 from pokemon_harness.emulator.interface import Capture, ReplayEmulator
 from pokemon_harness.emulator.mgba import MGBA
+from pokemon_harness.emulator.vbam import VBAM
 from pokemon_harness.memory.database import Memory
 from pokemon_harness.memory.retrieval import ledger_context, retrieve
 from pokemon_harness.runner import run
@@ -195,6 +198,8 @@ class HarnessTests(unittest.TestCase):
                 self.released = False
                 self.paused = False
                 self.fps = 60
+                self.min_hold_frames = 6
+                self.input_mode = "scancode"
 
             def _check_focus(self):
                 pass
@@ -290,6 +295,130 @@ class HarnessTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+
+    def test_lmstudio_timeout_identifies_inference_and_does_not_retry(self):
+        agent = LMStudio({"name": "test", "timeout_seconds": 180})
+        with patch("pokemon_harness.agent.lmstudio.urlopen", side_effect=TimeoutError("timed out")) as request:
+            with self.assertRaisesRegex(TimeoutError, "LM Studio.*180s"):
+                agent.decide(messages({"observation_id": 1}, b"fake-png"))
+        self.assertEqual(request.call_count, 1)
+
+    def test_minimum_press_preserves_wait_duration_and_reports_actual_input(self):
+        clock = SimpleNamespace(value=0.0)
+
+        def sleep(seconds):
+            clock.value += seconds
+
+        class FakeDesktop(MGBA):
+            def __init__(self):
+                self.config = {"pause_key": "F9"}
+                self.bindings = {"START": "SHIFT"}
+                self.running = False
+                self.held = set()
+                self.fps = 60
+                self.min_hold_frames = 6
+                self.input_mode = "scancode"
+                self.events = []
+                self.config["focus_game_area"] = True
+
+            def _check_focus(self):
+                pass
+
+            def _tap(self, binding):
+                self.events.append((binding, "tap", clock.value))
+
+            def _focus_game_area(self):
+                self.events.append(("canvas", "focus", self.running))
+
+            def _key(self, key, up=False):
+                self.events.append((key, "up" if up else "down", clock.value))
+                if up:
+                    self.held.discard(key)
+                else:
+                    self.held.add(key)
+
+        emulator = FakeDesktop()
+        action = {"kind": "press", "buttons": ["START"], "hold_frames": 1, "settle_frames": 0}
+        with patch("pokemon_harness.emulator.desktop.time.monotonic", side_effect=lambda: clock.value), \
+                patch("pokemon_harness.emulator.desktop.time.sleep", side_effect=sleep):
+            report = emulator.execute(action)
+            down = next(e[2] for e in emulator.events if e[1] == "down")
+            up = next(e[2] for e in emulator.events if e[1] == "up")
+            self.assertGreaterEqual(up - down, 0.1)
+            self.assertEqual(report["effective_action"]["hold_frames"], 6)
+            self.assertEqual(action["hold_frames"], 1)
+            self.assertFalse(emulator.running)
+            self.assertIn(("canvas", "focus", True), emulator.events)
+            report = emulator.execute(dict(action, kind="wait", buttons=[]))
+            self.assertEqual(report["effective_action"]["hold_frames"], 1)
+            self.assertFalse(emulator.held)
+
+    def test_shift_and_extended_keys_encode_real_scan_codes(self):
+        import ctypes
+        import os
+
+        if os.name != "nt":
+            self.skipTest("Windows ABI check")
+        emulator = MGBA.__new__(MGBA)
+        emulator.user32 = ctypes.WinDLL("user32", use_last_error=True)
+        emulator._configure_api()
+        emulator.user32 = SimpleNamespace(MapVirtualKeyW=lambda key, _: {0x10: 0x2A, 0x25: 0xE04B}[key])
+        emulator.input_mode = "scancode"
+        shift = emulator._keyboard_input(0x10)
+        self.assertEqual((shift.ki.wVk, shift.ki.wScan, shift.ki.dwFlags), (0, 0x2A, 8))
+        release = emulator._keyboard_input(0x10, up=True)
+        self.assertEqual(release.ki.dwFlags, 8 | 2)
+        left = emulator._keyboard_input(0x25)
+        self.assertEqual((left.ki.wScan, left.ki.dwFlags), (0x4B, 8 | 1))
+        emulator.input_mode = "virtual_key"
+        shift = emulator._keyboard_input(0x10)
+        self.assertEqual((shift.ki.wVk, shift.ki.wScan, shift.ki.dwFlags), (0x10, 0x2A, 0))
+
+    def test_input_diagnostic_archives_before_after_without_touching_memory(self):
+        emulator = ReplayEmulator(create_images(self.root / "fixtures"))
+        report = input_test(self.config, emulator, "START", 12, 45)
+        self.assertEqual(report["status"], "submitted")
+        self.assertEqual(len(emulator.actions), 1)
+        self.assertFalse((Path(self.config["run_dir"]) / "memory.sqlite").exists())
+        directory = next((Path(self.config["run_dir"]) / "input-tests").iterdir())
+        self.assertTrue((directory / report["before"]).is_file())
+        self.assertTrue((directory / report["after"]).is_file())
+
+
+    def test_vbam_uses_actual_pause_state_even_when_initial_assumption_is_wrong(self):
+        for actual_running in [True, False]:
+            with self.subTest(actual_running=actual_running):
+                emulator = VBAM.__new__(VBAM)
+                emulator.running = not actual_running
+                actual = SimpleNamespace(running=actual_running, commands=[])
+                emulator._menu_running = lambda: actual.running
+                emulator._find_pause_menu = lambda: (123, 0)
+
+                def post(hwnd, message, command, argument):
+                    actual.commands.append((message, command))
+                    actual.running = not actual.running
+                    return 1
+
+                emulator.hwnd = 456
+                emulator.user32 = SimpleNamespace(GetMenuItemID=lambda *_: 789, PostMessageW=post)
+                emulator._set_running(True)
+                self.assertTrue(actual.running)
+                self.assertTrue(emulator.running)
+                self.assertEqual(len(actual.commands), 0 if actual_running else 1)
+                emulator._pause()
+                self.assertFalse(actual.running)
+                self.assertFalse(emulator.running)
+
+    def test_vbam_menu_checkbox_decodes_paused_and_rejects_disabled_state(self):
+        emulator = VBAM.__new__(VBAM)
+        emulator._find_pause_menu = lambda: (123, 0)
+        for flags, expected_running in [(8, False), (0, True)]:
+            emulator.user32 = SimpleNamespace(GetMenuState=lambda *_: flags)
+            self.assertEqual(emulator._menu_running(), expected_running)
+        emulator.user32 = SimpleNamespace(GetMenuState=lambda *_: 3)
+        with self.assertRaisesRegex(RuntimeError, "unavailable or disabled"):
+            emulator._menu_running()
 
 
 if __name__ == "__main__":

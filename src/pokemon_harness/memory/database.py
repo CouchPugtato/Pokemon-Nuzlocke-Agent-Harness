@@ -106,10 +106,15 @@ class Memory:
 
     def recent_turns(self, limit=6):
         rows = self.connection.execute("SELECT * FROM turns ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        reports = self.connection.execute(
+            "SELECT payload FROM notes WHERE kind='action_result' ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        execution = {value["turn_id"]: value.get("execution")
+                     for value in (json.loads(row[0]) for row in reports)}
         result = []
         for row in reversed(rows):
             value = dict(row)
             value["decision"] = json.loads(value["decision"])
+            value["execution"] = execution.get(value["id"])
             result.append(value)
         return result
 

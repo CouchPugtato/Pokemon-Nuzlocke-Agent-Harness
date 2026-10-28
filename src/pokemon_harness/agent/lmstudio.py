@@ -2,6 +2,8 @@
 
 import json
 import os
+import socket
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .schemas import DECISION_SCHEMA
@@ -28,8 +30,19 @@ class LMStudio:
             headers["Authorization"] = "Bearer " + token
         request = Request(self.base_url + "/chat/completions",
                           data=json.dumps(payload).encode("utf-8"), headers=headers)
-        with urlopen(request, timeout=self.config.get("timeout_seconds", 180)) as response:
-            raw = response.read().decode("utf-8")
+        timeout = self.config.get("timeout_seconds", 180)
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8")
+        except (TimeoutError, socket.timeout) as exc:
+            raise TimeoutError(f"LM Studio did not return a decision within {timeout}s. "
+                               "No controller input was sent for this observation. "
+                               "Check LM Studio generation/load status or increase model.timeout_seconds.") from exc
+        except URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                raise TimeoutError(f"LM Studio connection timed out after {timeout}s. "
+                                   "No controller input was sent for this observation.") from exc
+            raise
         try:
             envelope = json.loads(raw)
             choice = envelope["choices"][0]

@@ -14,10 +14,10 @@
   ],
   "model": {
     "base_url": "http://127.0.0.1:1234/v1",
-    "name": "REPLACE_WITH_LOADED_VISION_MODEL_ID",
+    "name": "qwen3.8-27b",
     "temperature": 0.1,
     "max_tokens": 2000,
-    "timeout_seconds": 180,
+    "timeout_seconds": 600,
     "api_key_env": "LM_STUDIO_API_KEY"
   },
   "emulator": {
@@ -26,9 +26,12 @@
     "initial_state": "paused",
     "pause_key": "CTRL+P",
     "fps": 60,
+    "min_hold_frames": 6,
+    "input_mode": "scancode",
+    "focus_game_area": true,
     "crop": null,
     "buttons": {
-      "A": "E", "B": "Q", "START": "SHIFT", "SELECT": "CAPSLOCK",
+      "A": "E", "B": "Q", "START": "ENTER", "SELECT": "CAPSLOCK",
       "UP": "W", "DOWN": "S", "LEFT": "A", "RIGHT": "D",
       "L": "R", "R": "T"
     }
