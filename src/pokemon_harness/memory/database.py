@@ -118,19 +118,28 @@ class Memory:
             result.append(value)
         return result
 
-    def facts(self):
+    def facts(self, include_history=False):
         rows = self.connection.execute("""
-            SELECT f.* FROM facts f JOIN
-            (SELECT category,key,MAX(id) AS id FROM facts GROUP BY category,key) latest ON f.id=latest.id
+            SELECT f.*, latest.id AS latest_id FROM facts f JOIN
+            (SELECT category,key,MAX(id) AS id FROM facts GROUP BY category,key) latest
+            ON f.category=latest.category AND f.key=latest.key
+            WHERE ? OR f.id=latest.id
             ORDER BY f.id DESC
-        """).fetchall()
+        """, (include_history,)).fetchall()
         return [dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
-                     recorded_at=row["created_at"]) for row in rows]
+                     recorded_at=row["created_at"], fact_id=row["id"],
+                     is_latest=row["id"] == row["latest_id"]) for row in rows]
 
     def events(self):
         rows = self.connection.execute("SELECT * FROM events ORDER BY id").fetchall()
         return [dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
-                     recorded_at=row["created_at"]) for row in rows]
+                     recorded_at=row["created_at"], event_id=row["id"]) for row in rows]
+
+    def search(self, request, observation_id):
+        from .search import search_records
+
+        return search_records(self.facts(include_history=request["include_history"]),
+                              self.events(), request, observation_id)
 
     def hashes(self, limit=6):
         return [row[0] for row in self.connection.execute(

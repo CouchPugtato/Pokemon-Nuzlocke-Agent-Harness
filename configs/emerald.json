@@ -5,6 +5,7 @@
   "recent_turns": 6,
   "memory_limit": 24,
   "ledger_limit": 24,
+  "memory_search_rounds": 3,
   "rules": [
     "Catch only the first eligible wild encounter per named area; eligibility begins after receiving Poke Balls.",
     "Fainted Pokemon are permanently retired and must never be used again.",

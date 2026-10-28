@@ -37,5 +37,6 @@ class DemoAgent:
             "memory_updates": [{"category": "world", "key": "demo:doorway", "claim": "A doorway is visible in the synthetic scene.",
                                 "location": "Synthetic demo", "basis": "observed", "confidence": "high", "status": "active"}],
             "events": [],
+            "memory_search": None,
         }
         return value, {"backend": "scripted demo", "decision": value}
