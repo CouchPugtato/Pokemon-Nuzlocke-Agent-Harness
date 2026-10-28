@@ -39,6 +39,8 @@ DECISION_SCHEMA = obj({
     "scene": {"type": "string", "enum": ["overworld", "dialogue", "menu", "battle", "transition", "unknown"]},
     "location": text(120),
     "observation": text(1200),
+    "decision_reason": {**text(4000), "description":
+        "Explanation of the chosen action sequence, search, or stop. Empty is allowed; use only as much detail as helpful."},
     "action": obj({
         "kind": {"type": "string", "enum": ["press", "wait", "stop", "search_memory"]},
         "buttons": {"type": "array", "items": {"type": "string", "enum": BUTTONS},

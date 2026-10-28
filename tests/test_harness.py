@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
+from jsonschema.exceptions import ValidationError
 
 from pokemon_harness.agent.lmstudio import LMStudio
 from pokemon_harness.agent.prompts import messages
@@ -48,6 +49,25 @@ class HarnessTests(unittest.TestCase):
         memory.initialize(self.config)
         memory.observe("screenshots/one.png", "hash", "replay")
         return memory
+
+    def test_decision_reason_allows_empty_or_detailed_text_with_a_bound(self):
+        value = decision()
+        for reason in ("", "Approach the visible doorway.", "x" * 4000):
+            value["decision_reason"] = reason
+            validate_decision(value, 1)
+        value["decision_reason"] = "x" * 4001
+        with self.assertRaises(ValidationError):
+            validate_decision(value, 1)
+
+    def test_decision_reason_survives_database_reopen_and_export(self):
+        memory = self.memory()
+        value = decision()
+        value["decision_reason"] = "The path appears clear, but the doorway destination is uncertain."
+        memory.plan(1, value)
+        reopened = Memory(self.root / "memory.sqlite")
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.recent_turns()[0]["decision"]["decision_reason"], value["decision_reason"])
+        self.assertEqual(reopened.export()["recent_turns"][0]["decision"]["decision_reason"], value["decision_reason"])
 
     def test_action_validation(self):
         value = decision()

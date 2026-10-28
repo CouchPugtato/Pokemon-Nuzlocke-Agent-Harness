@@ -25,6 +25,12 @@ Use sequences only for predictable inputs. Prefer a single move near a possible
 battle, dialogue, doorway or uncertain state; there is no automatic scene-change
 recognition to interrupt a plan. Intermediate screenshots are supplied next turn.
 expected_result predicts the whole sequence, never establishes that it succeeded.
+decision_reason is your explanation for choosing this plan, memory search or stop.
+It may be empty, a short sentence, or a fuller rationale up to 4000 characters.
+Choose the amount of detail that is useful; there is no minimum length and no need
+to pad it. Explain relevant evidence, assumptions, uncertainty or alternatives when
+helpful. Keep this rationale separate from observed facts and expected outcomes.
+It is saved with your decision for review; it is not an observed memory update.
 Respect minimum_press_frames in the context: shorter presses are extended by the
 desktop controller because the frontend may miss very brief key-down events.
 Resolve uncertainty by looking again or inspecting a menu. Stop if a consequential

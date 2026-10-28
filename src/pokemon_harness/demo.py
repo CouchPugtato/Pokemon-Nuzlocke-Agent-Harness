@@ -31,6 +31,7 @@ class DemoAgent:
         value = {
             "observation_id": context["observation_id"], "scene": "overworld", "location": "Synthetic demo",
             "observation": "Synthetic fixture; this decision is scripted, not inferred by a model.",
+            "decision_reason": "Follow the scripted demo sequence." if kind == "press" else "The scripted demo is complete.",
             "action": {"kind": kind, "buttons": ["UP"] if kind == "press" else [],
                        "hold_frames": 8, "settle_frames": 4},
             "expected_result": "Inspect the next demo image" if kind == "press" else "Demo completed",
