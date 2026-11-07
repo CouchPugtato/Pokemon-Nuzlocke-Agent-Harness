@@ -285,7 +285,7 @@ class OutcomeIntegrationTests(unittest.TestCase):
         self.assertEqual(len(emulator.actions), 1)
         self.assertEqual(len(contexts), 3)
         self.assertEqual(contexts[1]["review_correction"]["pending_turn_id"], 1)
-        self.assertIn("REVIEW REQUIRED", requests[1][1]["content"][1]["text"])
+        self.assertTrue(any("REVIEW REQUIRED" in block.get("text", "") for block in requests[1][1]["content"]))
         self.assertGreater(contexts[1]["observation_id"], contexts[0]["observation_id"])
         self.assertGreater(contexts[2]["observation_id"], contexts[1]["observation_id"])
         self.assertIsNone(contexts[2]["review_correction"])

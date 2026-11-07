@@ -6,7 +6,8 @@ import socket
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from .schemas import DECISION_SCHEMA
+from .schemas import request_schema
+from jsonschema import Draft202012Validator, ValidationError
 from .context_budget import assess_request, budget_settings, calibrate_usage
 
 
@@ -94,6 +95,7 @@ class LMStudio:
         print(f"LM Studio: {self.inference_model}, verified context {actual} tokens", flush=True)
 
     def decide(self, messages):
+        schema = request_schema(messages)
         budget = assess_request(messages, self.config, self.loaded_context_length, self.budget_factor)
         if budget["effective_output_tokens"] != budget["requested_output_tokens"]:
             print(f"Context budget: estimated input {budget['estimated_input_tokens']}, "
@@ -104,7 +106,7 @@ class LMStudio:
             "temperature": self.config.get("temperature", 0.1),
             "max_tokens": budget["effective_output_tokens"], "stream": False,
             "response_format": {"type": "json_schema", "json_schema": {
-                "name": "game_decision", "strict": True, "schema": DECISION_SCHEMA}},
+                "name": "game_decision", "strict": True, "schema": schema}},
         }
         if "thinking" in self.config:
             payload["reasoning_effort"] = "medium" if self.config["thinking"] else "none"
@@ -149,6 +151,10 @@ class LMStudio:
                                    "or reduce prompt/history")
                 raise ValueError(detail)
             value = json.loads(choice["message"]["content"])
+            if "anyOf" in schema:
+                Draft202012Validator(schema).validate(value)
+        except ValidationError as exc:
+            raise InvalidModelResponse(f"Invalid LM Studio review response: {exc.message[:600]}", trace) from exc
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise InvalidModelResponse(f"Invalid LM Studio response: {exc}", trace) from exc
         # screenshots staying in the observation archive

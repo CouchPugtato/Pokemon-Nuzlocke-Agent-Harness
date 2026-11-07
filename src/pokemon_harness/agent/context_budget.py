@@ -6,7 +6,7 @@ import json
 import math
 
 from .prompts import messages
-from .schemas import DECISION_SCHEMA
+from .schemas import DECISION_SCHEMA, request_schema
 
 
 DEFAULTS = {"output_reserve_tokens": 8192, "safety_margin_tokens": 4096,
@@ -37,12 +37,12 @@ def budget_settings(model):
 
 def calibration_key(model):
     payload = {"name": model["name"], "base_url": model.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/"),
-               "policy": budget_settings(model), "schema": DECISION_SCHEMA}
+               "policy": budget_settings(model), "schema": DECISION_SCHEMA, "schema_policy": "bounded_review_v1"}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def estimate_request(request, policy):
-    text_bytes = len(json.dumps(DECISION_SCHEMA, ensure_ascii=False).encode("utf-8"))
+    text_bytes = len(json.dumps(request_schema(request), ensure_ascii=False).encode("utf-8"))
     images = 0
     for message in request:
         text_bytes += len(str(message["role"]).encode("utf-8"))

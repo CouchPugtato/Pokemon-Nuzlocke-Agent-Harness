@@ -1,6 +1,8 @@
 """one output contract for generation and validation"""
 
 from jsonschema import Draft202012Validator
+import copy
+import json
 
 BUTTONS = ["A", "B", "START", "SELECT", "UP", "DOWN", "LEFT", "RIGHT", "L", "R"]
 MEMORY_CATEGORIES = ["working", "objective", "world", "party", "lesson"]
@@ -153,6 +155,63 @@ DECISION_SCHEMA = obj({
         "corrects_event_key": text(120),
     })},
 })
+
+
+def schema_for_context(context):
+    pending = context.get("outcome_review", {})
+    if not pending.get("pending_count"):
+        return DECISION_SCHEMA
+    plan = pending.get("next_plan")
+    if not plan:
+        raise ValueError("Pending outcome review has no available plan")
+    review = copy.deepcopy(DECISION_SCHEMA)
+    fields = review["properties"]
+    empty = {"type": "array", "maxItems": 0}
+    for key in ("additional_actions", "memory_updates", "events", "contradiction_updates"):
+        fields[key] = copy.deepcopy(empty)
+    for key in ("memory_search", "working_state_update", "strategy", "recovery_plan"):
+        fields[key] = {"type": "null"}
+    fields["memory_dependencies"] = obj({"facts": copy.deepcopy(empty), "working_state": {"type": "null"},
+                                         "working_state_events": {"type": "null"}})
+    fields["action"] = obj({"kind": {"type": "string", "enum": ["review_outcomes"]},
+                            "buttons": copy.deepcopy(empty), "hold_frames": {"type": "integer", "enum": [1]},
+                            "settle_frames": {"type": "integer", "enum": [0]}})
+    item = fields["outcome_reviews"]["items"]
+    item["properties"]["turn_id"]["enum"] = [plan["turn_id"]]
+    item["properties"]["expected_revision"]["enum"] = [plan["expected_revision"]]
+    steps = [step for step in plan["steps"] if step["input_status"] in {"completed", "executing", "unknown"}]
+    if not steps:
+        raise ValueError("Pending outcome review has no attempted steps")
+    item["properties"]["steps"]["minItems"] = len(steps)
+    item["properties"]["steps"]["maxItems"] = len(steps)
+    step_fields = item["properties"]["steps"]["items"]["properties"]
+    step_fields["step_index"]["enum"] = [step["step_index"] for step in steps]
+    step_fields["before_observation_id"]["enum"] = sorted({step["before_observation_id"] for step in steps})
+    step_fields["after_observation_id"]["enum"] = sorted({step["after_observation_id"] or context["observation_id"] for step in steps})
+    visible = context.get("outcome_visual_evidence_ids")
+    if visible is not None and any(step["after_observation_id"] is None or not {
+            step["before_observation_id"], step["after_observation_id"]}.issubset(visible) for step in steps):
+        step_fields["assessment"]["enum"] = ["uncertain"]
+    fields["outcome_reviews"]["minItems"] = 1
+    stop = copy.deepcopy(review)
+    stop["properties"]["action"]["properties"]["kind"]["enum"] = ["stop"]
+    stop["properties"]["outcome_reviews"] = copy.deepcopy(empty)
+    return {"anyOf": [review, stop]}
+
+
+def request_schema(request):
+    for message in request:
+        if message["role"] != "user" or not isinstance(message.get("content"), list):
+            continue
+        for block in message["content"]:
+            if block.get("type") == "text":
+                try:
+                    context = json.loads(block["text"])
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(context, dict):
+                    return schema_for_context(context)
+    return DECISION_SCHEMA
 
 
 def validate_decision(value, observation_id, max_frames=60, max_sequence_length=5):
