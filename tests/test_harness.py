@@ -154,6 +154,19 @@ class HarnessTests(unittest.TestCase):
                 return value, trace
 
         result = run(self.config, ReplayEmulator(images), CorrectionAgent(), turns=1)
+        self.assertEqual(result["reason"], "review_required")
+        memory = Memory(Path(self.config["run_dir"]) / "memory.sqlite")
+        try:
+            (Path(self.config["run_dir"]) / "review.png").write_bytes(images[0].read_bytes())
+            observation_id = memory.observe("review.png", "review", "recorded evidence")
+            correction = decision(observation_id)
+            correction["action"] = dict(correction["action"], kind="stop", buttons=[])
+            correction["events"] = [event("correction:1", "correction", "high", "route101:first")]
+            turn = memory.plan(observation_id, correction)
+            memory.status(turn, "stopped")
+        finally:
+            memory.close()
+        result = run(self.config, ReplayEmulator(images), DemoAgent(), turns=1)
         self.assertEqual(result["completed_actions"], 1)
 
     def test_input_failure_is_unknown_and_no_retry(self):
@@ -208,7 +221,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(selected[0]["age_observations"], 9)
 
     def test_desktop_input_failure_releases_keys_without_frontend_commands(self):
-        # Exercise the real execute/finally logic without generating OS input.
+        # exercising input failure without real input
         class FakeMGBA(MGBA):
             def __init__(self):
                 self.config = {}
@@ -258,7 +271,7 @@ class HarnessTests(unittest.TestCase):
                 self.assertIs(result, factory.return_value)
 
     def test_user_controls_accept_caps_lock_and_standalone_shift(self):
-        # VBA-M displays Caps Lock as CAPITAL and standalone Shift as 306:4.
+        # accepting emulator names for caps lock and shift
         self.assertEqual(MGBA._combo("CAPSLOCK"), [0x14])
         self.assertEqual(MGBA._combo("CAPITAL"), [0x14])
         self.assertEqual(MGBA._combo("SHIFT"), [0x10])
@@ -456,8 +469,8 @@ class HarnessTests(unittest.TestCase):
                 emulator.held = set()
                 emulator._focus = lambda: None
                 emulator._check_focus = lambda: None
-                # Only capture geometry APIs are available. Any keyboard/menu
-                # operation during capture or shutdown must fail this test.
+                # allowing only capture geometry during inspection
+                # rejecting keyboard and menu access during capture and shutdown
                 emulator.user32 = SimpleNamespace(GetClientRect=rect, ClientToScreen=lambda *_: 1)
                 with patch("PIL.ImageGrab.grab", return_value=Image.new("RGB", (240, 160))):
                     capture = emulator.capture()

@@ -15,7 +15,7 @@ from .control.registry import active_sessions, select_session
 from .emulator.interface import ReplayEmulator
 from .memory.database import Memory
 from .runner import run
-from .telemetry.recorder import write_json
+from .telemetry.recorder import RunLock, write_json
 
 
 def emulator_for(config, config_path):
@@ -54,6 +54,11 @@ def play_run(args):
         config_path = directory / "config.json"
         config = load_config(config_path)
         config["run_dir"] = str(directory)
+        # checking durable cases before loading a model or opening the emulator
+        with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+            review = memory.escalations.review(memory.events())
+            if review["blocked_cases"] or review["validity"] == "invalid":
+                raise ValueError("Run needs review or is invalid. Use pokemon-harness cases and resolve-case")
     else:
         config_path = args.config
         config = load_config(config_path)
@@ -78,8 +83,8 @@ def play_run(args):
     if args.thinking is not None:
         config["model"]["thinking"] = args.thinking == "on"
     agent = LMStudio(config["model"])
-    # Desktop construction acquires ownership without focusing or sending input.
-    # Hold it before model loading and release it even if startup/run locking fails.
+    # holding emulator ownership before model loading
+    # releasing ownership on startup and run failures
     with closing(emulator_for(config, config_path)) as emulator:
         agent.prepare()
         thinking = ("on" if config["model"]["thinking"] else "off") if "thinking" in config["model"] else "model default"
@@ -138,12 +143,49 @@ def main(argv=None):
     controls.add_argument("--settle-frames", type=int, default=45)
     inspect = commands.add_parser("memory", help="Read durable facts and ledger as JSON")
     inspect.add_argument("--run-dir", required=True, type=Path)
+    cases = commands.add_parser("cases", help="Inspect durable review cases for the latest or specified run")
+    cases.add_argument("run_dir", nargs="?", type=Path)
+    cases.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    cases.add_argument("--case", type=int, help="Show one case including its resolution history")
+    create_case = commands.add_parser("case-open", help="Record uncertainty that blocks further input")
+    create_case.add_argument("run_dir", nargs="?", type=Path)
+    create_case.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    create_case.add_argument("--reason", required=True)
+    create_case.add_argument("--observation-id", action="append", type=int, default=[])
+    resolve = commands.add_parser("resolve-case", help="Append an evidence resolution or explicit user decision")
+    resolve.add_argument("case_id", type=int)
+    resolve.add_argument("run_dir", nargs="?", type=Path)
+    resolve.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    resolve.add_argument("--outcome", choices=["evidence", "user-assertion", "unverifiable", "invalid"], required=True)
+    resolve.add_argument("--reason", required=True)
+    resolve.add_argument("--observation-id", action="append", type=int, default=[])
+    resolve.add_argument("--correction-key", default="")
+    resolve.add_argument("--allow-continue", action="store_true",
+                         help="Explicitly continue an unverifiable run without changing the event ledger")
     demo = commands.add_parser("demo", help="Offline synthetic loop: no emulator or LM Studio required")
     demo.add_argument("--run-dir", type=Path, default=Path("runs/demo"))
     args = parser.parse_args(argv)
     try:
         if args.command in {"run", "resume"}:
             play_run(args)
+        elif args.command in {"cases", "case-open", "resolve-case"}:
+            directory = saved_run(args.run_dir, args.runs_dir)
+            with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+                memory.escalations.review(memory.events())
+                if args.command == "case-open":
+                    memory.escalations.open("manual:" + uuid.uuid4().hex, args.reason, args.observation_id,
+                                            {"source": "user"})
+                elif args.command == "resolve-case":
+                    memory.escalations.resolve(args.case_id, args.outcome, args.reason, args.observation_id,
+                                               args.correction_key, args.allow_continue)
+                records = memory.escalations.cases()
+                if args.command == "cases" and args.case is not None:
+                    records = [case for case in records if case["id"] == args.case]
+                    if not records:
+                        raise ValueError(f"No case {args.case} in this run")
+                print(json.dumps({"run_dir": str(directory), "validity": memory.escalations.validity(),
+                                  "cases": records}, indent=2))
+                write_json(directory / "memory-export.json", memory.export())
         elif args.command in {"stop", "pause", "handoff"}:
             session = select_session(args.run_dir, args.session, args.runs_dir)
             kind = "handoff" if args.command == "handoff" else "stop"

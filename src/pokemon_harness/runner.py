@@ -10,7 +10,6 @@ from .control.handoff import ControlLost
 from .control.registry import read_record
 from .memory.database import Memory
 from .memory.retrieval import ledger_context, recent_turn_context, retrieve
-from .rules.nuzlocke import unresolved_events
 from .telemetry.recorder import RunLock, save_capture, write_json
 
 
@@ -29,6 +28,11 @@ def run(config, emulator, agent, turns=20, control=None):
             recovered = memory.recover()
             if recovered:
                 memory.note("recovery", recovered)
+            review = memory.escalations.review(memory.events())
+            if review["blocked_cases"] or review["validity"] == "invalid":
+                print("Run needs review before input. Use pokemon-harness cases.")
+                return {"reason": "review_required", "case_ids": [case["id"] for case in review["blocked_cases"]],
+                        "validity": review["validity"]}
             try:
                 return _loop(config, emulator, agent, turns, memory, run_dir, recovered, control)
             except (ControlLost, StopRequested, KeyboardInterrupt) as exc:
@@ -85,11 +89,13 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
             memory.note("decision_error", {"observation_id": observation_id, "error": str(exc)})
             raise
 
-        uncertain = unresolved_events(memory.events())
-        if uncertain:
-            memory.status(turn_id, "blocked", "Unresolved Nuzlocke events: " + ", ".join(uncertain))
-            print(f"Stopped before input: unresolved events {', '.join(uncertain)}")
-            return {"completed_actions": completed, "reason": "unresolved_events"}
+        review = memory.escalations.review(memory.events())
+        if review["blocked_cases"] or review["validity"] == "invalid":
+            case_ids = [case["id"] for case in review["blocked_cases"]]
+            memory.status(turn_id, "blocked", "Unresolved review cases: " + str(case_ids))
+            print(f"Stopped before input: review cases {case_ids}. Use pokemon-harness cases.")
+            return {"completed_actions": completed, "reason": "unresolved_events", "case_ids": case_ids,
+                    "validity": review["validity"]}
         if decision["action"]["kind"] == "stop":
             memory.status(turn_id, "stopped")
             print(f"Agent stopped: {decision['expected_result']}")
@@ -103,8 +109,7 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
                 if control:
                     control.check()
                 if index > 1:
-                    # All buttons are already released. This extra delay is in
-                    # addition to the previous move's settle/capture overhead.
+                    # extra delay after the previous move and capture
                     delay = config.get("sequence_delay_ms", 250) / 1000
                     if control:
                         control.wait(delay)
@@ -151,7 +156,7 @@ def _capture(memory, run_dir, emulator):
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                      previous_image, observation_id, timing, recovered, sequence_images=None, control=None,
                      intervention=None):
-    """Read-only searches do not execute inputs or consume controller turns."""
+    """read only searches before controller input"""
     budget = config.get("memory_search_rounds", 3)
     search_results = []
     for search_round in range(budget + 1):
@@ -162,6 +167,10 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "observation_id": observation_id,
             "objective": config["objective"], "rules": config["rules"],
             "intervention": intervention,
+            "run_review": {"validity": memory.escalations.validity(), "authorized_overrides": [
+                {"case_id": case["id"], "details": case["details"],
+                 "resolution": case["resolutions"][-1]} for case in memory.escalations.cases()
+                if not case["blocking"] and case["resolutions"][-1]["allow_continue"]]},
             "action_limit_frames": config["max_action_frames"],
             "max_sequence_length": config.get("max_sequence_length", 5),
             "sequence_delay_ms": config.get("sequence_delay_ms", 250),

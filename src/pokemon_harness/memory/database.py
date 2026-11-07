@@ -1,8 +1,9 @@
-"""Transactional memory, event history, and action journal for a single run."""
+"""transactional memory and event history for a single run"""
 
 import json
 import sqlite3
 from datetime import datetime, timezone
+from .escalations import Escalations
 
 
 def now():
@@ -43,9 +44,10 @@ class Memory:
                 execution TEXT, error TEXT, updated_at TEXT NOT NULL,
                 PRIMARY KEY(turn_id, step_index));
         """)
+        self.escalations = Escalations(self.connection)
 
     def initialize(self, config):
-        # Model may change between invocations, but run identity and rules may not.
+        # keeping the objective and rules fixed across sessions
         identity = {"objective": config["objective"], "rules": config["rules"]}
         existing = self.connection.execute("SELECT value FROM metadata WHERE key='identity'").fetchone()
         if existing and json.loads(existing[0]) != identity:
@@ -61,7 +63,7 @@ class Memory:
         return cursor.lastrowid
 
     def recover(self):
-        """Never replay actions that may already have happened."""
+        """avoiding replay of uncertain actions"""
         rows = self.connection.execute("SELECT id,status FROM turns WHERE status IN ('planned','executing')").fetchall()
         with self.connection:
             for row in rows:
@@ -71,7 +73,7 @@ class Memory:
         return [dict(row) for row in rows]
 
     def plan(self, observation_id, decision):
-        """Facts, events, and planned action are committed together before input."""
+        """saving facts events and plans together before input"""
         with self.connection:
             for event in decision["events"]:
                 existing = self.connection.execute("SELECT payload FROM events WHERE key=?", (event["key"],)).fetchone()
@@ -180,7 +182,8 @@ class Memory:
             "SELECT image_hash FROM observations ORDER BY id DESC LIMIT ?", (limit,))]
 
     def export(self):
-        return {"facts": self.facts(), "events": self.events(), "recent_turns": self.recent_turns(20)}
+        return {"facts": self.facts(), "events": self.events(), "recent_turns": self.recent_turns(20),
+                "cases": self.escalations.cases(), "validity": self.escalations.validity()}
 
     def close(self):
         self.connection.close()
