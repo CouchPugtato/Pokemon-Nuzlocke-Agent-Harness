@@ -10,6 +10,7 @@ from .progress import Progress
 from .contradictions import Contradictions
 from .budgets import BudgetCalibration
 from .conversation import Conversation, SOURCE_TABLES, compaction_settings
+from .repetition import Repetition
 from ..control.loop_detection import image_features
 from ..telemetry.cleanup import cleanup_operations
 
@@ -68,6 +69,9 @@ class Memory:
         self.contradictions = Contradictions(self.connection, self.escalations)
         self.budgets = BudgetCalibration(self.connection)
         self.conversation = Conversation(self.connection)
+        self.repetition = Repetition(self.connection)
+        self.progress.repetition = self.repetition
+        self.progress.working_context = self.working_context
 
     def initialize(self, config):
         # keeping the objective and rules fixed across sessions
@@ -153,6 +157,7 @@ class Memory:
             progress = self.progress.refresh()
             if decision["action"]["kind"] in {"press", "wait"}:
                 self.progress.reserve(cursor.lastrowid, decision, progress)
+                self.repetition.reserve(cursor.lastrowid, decision, self.working_context())
                 self.outcomes.intent(cursor.lastrowid, self.working_context())
                 for index, action in enumerate([decision["action"], *decision.get("additional_actions", [])], 1):
                     self.connection.execute(

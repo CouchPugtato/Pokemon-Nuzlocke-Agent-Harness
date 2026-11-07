@@ -188,6 +188,30 @@ def main(argv=None):
     checkpoint = commands.add_parser("checkpoint", help="Commit a conversation checkpoint without starting the emulator")
     checkpoint.add_argument("run_dir", nargs="?", type=Path)
     checkpoint.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    allowance = commands.add_parser("allow-repeat", help="Grant a stopped run a narrow subgoal repetition allowance")
+    allowance.add_argument("run_dir", type=Path)
+    allowance.add_argument("--subgoal", required=True)
+    allowance.add_argument("--strategy", required=True, choices=["move", "advance_dialogue", "wait"])
+    allowance.add_argument("--button", choices=["UP", "DOWN", "LEFT", "RIGHT", "A", "B"])
+    allowance.add_argument("--moves", type=int, required=True)
+    allowance.add_argument("--seconds", type=int, required=True)
+    allowance.add_argument("--reason", required=True)
+    allowance.add_argument("--until", required=True, help="Visible termination condition")
+    extension = commands.add_parser("extend-runtime", help="Record an explicit cumulative runtime extension for a stopped run")
+    extension.add_argument("run_dir", type=Path)
+    extension.add_argument("--seconds", type=int, required=True)
+    extension.add_argument("--reason", required=True)
+    evaluation = commands.add_parser("evaluate", help="Replay archived requests or compare shadow proposals without game input")
+    evaluation.add_argument("run_dir", type=Path)
+    evaluation.add_argument("--mode", choices=["replay", "shadow"], default="replay")
+    evaluation.add_argument("--output-dir", type=Path)
+    evaluation.add_argument("--config", type=Path, help="Model configuration for shadow mode")
+    evaluation.add_argument("--limit", type=int, default=20)
+    evaluation.add_argument("--offset", type=int, default=0)
+    evaluation.add_argument("--repeat", type=int, default=1)
+    evaluation.add_argument("--labels", type=Path)
+    evaluation.add_argument("--generation-seconds", type=int, default=600)
+    evaluation.add_argument("--total-seconds", type=int, default=3600)
     cases = commands.add_parser("cases", help="Inspect durable review cases for the latest or specified run")
     cases.add_argument("run_dir", nargs="?", type=Path)
     cases.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -221,6 +245,38 @@ def main(argv=None):
     demo.add_argument("--run-dir", type=Path, default=Path("runs/demo"))
     args = parser.parse_args(argv)
     try:
+        if args.command == "extend-runtime":
+            from .control.timing import RuntimeBudget
+            directory = saved_run(args.run_dir, Path("runs"))
+            config = load_config(directory / "config.json")
+            with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+                runtime = RuntimeBudget(memory, config)
+                runtime.extend(args.seconds, args.reason)
+                print(json.dumps({"added_seconds": args.seconds, "reason": args.reason}, indent=2))
+            return 0
+        if args.command == "evaluate":
+            from .evaluation import evaluate
+            directory = saved_run(args.run_dir, Path("runs"))
+            output = args.output_dir or Path("evaluations") / (datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6])
+            agent = None
+            if args.mode == "shadow":
+                config = load_config(args.config or directory / "config.json")
+                agent = LMStudio(config["model"])
+            report = evaluate(directory, output, args.mode, agent, args.limit, args.offset, args.repeat,
+                              args.labels, args.generation_seconds, args.total_seconds)
+            print(json.dumps({"report": str(output.resolve() / "evaluation-report.json"), "summary": report["summary"],
+                              "controller_inputs_sent": report["controller_inputs_sent"]}, indent=2))
+            return 0 if not report["summary"]["errors"] and not report["summary"]["label_failures"] else 1
+        if args.command == "allow-repeat":
+            directory = saved_run(args.run_dir, Path("runs"))
+            with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+                state = memory.working_context()
+                if not state.get("subgoal") or state["subgoal"]["id"] != args.subgoal:
+                    raise ValueError("Repetition allowance must name the current subgoal exactly")
+                memory.repetition.grant(state, args.strategy, [args.button] if args.button else [],
+                                        args.moves, args.seconds, args.reason, args.until)
+                print(json.dumps(memory.repetition.context(state), indent=2))
+            return 0
         if args.command in {"run", "resume"}:
             play_run(args)
         elif args.command == "backup":

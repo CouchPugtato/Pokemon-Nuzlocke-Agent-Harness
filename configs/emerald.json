@@ -8,6 +8,13 @@
   "memory_limit": 24,
   "ledger_limit": 24,
   "memory_search_rounds": 3,
+  "timing_budgets": {
+    "session_seconds": 3600,
+    "run_seconds": 86400,
+    "generation_seconds": 600,
+    "decision_age_seconds": 600,
+    "scene_age_seconds": {}
+  },
   "capture_settling": {
     "enabled": true,
     "min_delay_ms": 50,

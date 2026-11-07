@@ -1,4 +1,4 @@
-"""Cooperative harness stops, including while a model request is pending."""
+"""cooperative harness stops while model requests are pending"""
 
 import os
 import queue
@@ -38,7 +38,7 @@ class RunControl:
         self.guard_error = None
 
     def start(self):
-        # Called only after acquiring the run lock, before accepting new requests.
+        # starting after the run lock and before accepting requests
         self.path.unlink(missing_ok=True)
         self.stopped.clear()
         self.finished.clear()
@@ -81,6 +81,9 @@ class RunControl:
             unregister_session(self.record)
 
     def check(self):
+        budget_check = getattr(self, "budget_check", None)
+        if budget_check:
+            budget_check()
         request = read_record(self.path)
         matching_request = self.record and request and request.get("session_id") == self.record["session_id"]
         if matching_request and request.get("kind") == "handoff":
@@ -110,8 +113,8 @@ class RunControl:
             except BaseException as exc:
                 result.put((False, exc))
 
-        # This thread handles HTTP only, never game input or memory. If stopped,
-        # discard its eventual response; do not wait for the server to finish.
+        # keeping the worker away from game input and memory
+        # discarding late responses after a stop
         threading.Thread(target=request, daemon=True).start()
         while True:
             self.check()

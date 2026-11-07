@@ -208,6 +208,14 @@ Searches and review_outcomes cannot write dependencies or contradiction updates.
 Supported means an undisputed observed interpretation, not independent verification.
 
 Strategies and bounded recovery:
+timing_budgets bounds generation, session time, cumulative active run time and
+controller decision age. Expiry stops the harness; resuming never replays a stale plan.
+progress.repetition_allowance may contain an explicit user grant for the exact subgoal
+revision, strategy and buttons. It permits only single moves in overworld, dialogue or
+menus, expires by time or reserved move count, and ends on any working state revision.
+Stop or complete the subgoal when its visible termination_condition is met. The grant
+does not bypass exact visual cycles, no progress limits, recovery tests or review cases.
+The model cannot grant or renew allowances by changing labels or goals.
 Every controller plan needs strategy with kind, target and intended_effect.
 Use kind advance_dialogue, inspect_menu, move, interact, battle, capture, flee,
 wait or other. Use recovery_plan=null in ordinary play. Strategy labels describe

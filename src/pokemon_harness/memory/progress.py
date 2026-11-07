@@ -93,6 +93,7 @@ class Progress:
                     ON f.observation_id=o.id WHERE o.id=?
                 """, (step["after_observation_id"],)).fetchone()
                 frames.append({"observation_id": step["after_observation_id"],
+                               "turn_id": turn[0],
                                "image_hash": row[0] if row else None,
                                "features": json.loads(row[1]) if row and row[1] else None,
                                "signature": input_signature([step["action"]])})
@@ -120,6 +121,19 @@ class Progress:
             triggers.append({"kind": "no_progress_budget"})
         if repeats >= policy["strategy_attempts"]:
             triggers.append({"kind": "repeated_inputs"})
+        allowance = self.repetition.context(self.working_context()) if hasattr(self, "repetition") else None
+        suppressed = []
+        if allowance and allowance["active"]:
+            covered = {row[0] for row in self.connection.execute(
+                "SELECT turn_id FROM repetition_uses WHERE subgoal_id=?", (allowance["subgoal_id"],))}
+            for signal in triggers:
+                if signal["kind"] not in {"input_cycle", "similar_visual", "repeated_inputs"}:
+                    continue
+                count = signal.get("period", 1) * signal.get("repetitions", policy["strategy_attempts"])
+                tail = frames[-count:]
+                if len(tail) >= count and all(frame["turn_id"] in covered for frame in tail):
+                    suppressed.append(signal)
+            triggers = [signal for signal in triggers if signal not in suppressed]
         episode = self.connection.execute("SELECT * FROM progress_episodes ORDER BY id DESC LIMIT 1").fetchone()
         latest_turn = samples[-1]["turn_id"] if samples else 0
         last_progress = max((sample["turn_id"] for sample in samples if sample["progress"]), default=0)
@@ -171,6 +185,7 @@ class Progress:
             if episode["status"] == "active" and used and pending:
                 mode = "test_alternative"
         return {"mode": mode, "episode_id": episode["id"] if episode else None,
+                "repetition_allowance": allowance, "suppressed_signals": suppressed,
                 "case_id": episode["case_id"] if episode else None, "policy": policy,
                 "no_progress_attempts": len(failures), "repeated_input_attempts": repeats,
                 "recovery_attempts_used": used, "recovery_attempts_remaining": max(0, policy["max_recovery_attempts"] - used),

@@ -11,6 +11,7 @@ from .memory.recall import automatic_recall, recall_settings
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
 from .control.capture import capture_settings, settled_capture, capture_age
+from .control.timing import RuntimeBudget, bounded_decision
 from .control.session import StopRequested
 from .control.handoff import ControlLost
 from .control.registry import read_record
@@ -42,14 +43,18 @@ def run(config, emulator, agent, turns=20, control=None):
 
 def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
     memory = None
+    runtime = None
     try:
         require_live_run(run_dir)
         storage.start()
         memory = Memory(run_dir / "memory.sqlite")
         memory.initialize(config)
+        runtime = RuntimeBudget(memory, config)
+        runtime.start()
         memory.conversation.active_checkpoint()
         if control:
             control.start()
+            control.budget_check = runtime.check
         write_json(run_dir / "config.json", config)
         recovered = memory.recover()
         if recovered:
@@ -61,7 +66,7 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
             return {"reason": "review_required", "case_ids": [case["id"] for case in review["blocked_cases"]],
                     "validity": review["validity"]}
         try:
-            return _loop(config, emulator, agent, turns, memory, run_dir, recovered, control, storage)
+            return _loop(config, emulator, agent, turns, memory, run_dir, recovered, control, storage, runtime)
         except (ControlLost, StopRequested, KeyboardInterrupt) as exc:
             if control is None:
                 raise
@@ -82,6 +87,8 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
         if control:
             operations.append(("control monitor", control.finish_monitoring))
         operations.append(("emulator", emulator.close))
+        if runtime:
+            operations.append(("runtime accounting", runtime.finish))
         if memory is not None:
             def checkpoint():
                 memory.recover()
@@ -98,7 +105,7 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
         cleanup_operations(operations, sys.exc_info()[1])
 
 
-def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None, storage=None):
+def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None, storage=None, runtime=None):
     previous = memory.previous_observation()
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
     current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control)
@@ -114,14 +121,18 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
     completed = 0
     sequence_images = []
     for _ in range(turns):
+        if runtime:
+            runtime.check()
         if control:
             control.check()
         decision, current_image, previous_image, observation_id, timing, request_id = _choose_decision(
             config, emulator, agent, memory, run_dir, current_image, previous_image,
-            observation_id, timing, recovered, sequence_images, control, intervention, storage)
+            observation_id, timing, recovered, sequence_images, control, intervention, storage, runtime)
         if control:
             control.check()
         try:
+            if runtime and decision["action"]["kind"] in {"press", "wait"}:
+                runtime.fresh(capture_age(memory.capture_metadata(observation_id)), decision["scene"])
             if storage:
                 storage.check()
             turn_id = memory.plan(observation_id, decision, request_id)
@@ -164,9 +175,11 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
                     storage.check()
                 if control:
                     control.check()
-                memory.step_status(turn_id, index, "executing")
                 input_age = capture_age(memory.capture_metadata(observation_id))
                 decision_age = capture_age(memory.capture_metadata(decision["observation_id"]))
+                if runtime:
+                    runtime.fresh(decision_age, decision["scene"])
+                memory.step_status(turn_id, index, "executing")
                 input_started = time.monotonic()
                 execution = emulator.execute(action)
                 execution = dict(execution or {}, observation_age_at_input_seconds=input_age,
@@ -233,7 +246,7 @@ def _capture(memory, run_dir, emulator, storage=None, config=None, control=None,
 
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                      previous_image, observation_id, timing, recovered, sequence_images=None, control=None,
-                     intervention=None, storage=None):
+                     intervention=None, storage=None, runtime=None):
     """read only searches before controller input"""
     budget = config.get("memory_search_rounds", 3)
     review_budget = config.get("outcome_review_rounds", 3)
@@ -246,6 +259,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
     compacted = False
     pressure = False
     for _ in range(budget + review_budget + 2):
+        if runtime:
+            runtime.check()
         if storage:
             storage.check()
         if not compacted and memory.conversation.compaction_due(settings, pressure):
@@ -286,6 +301,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "minimum_press_frames": config["emulator"].get("min_hold_frames", 6)
                 if config["emulator"]["backend"] in {"mgba", "vbam"} else 1,
             "timing": timing,
+            "timing_budgets": dict(runtime.policy, effective_run_seconds=runtime.run_limit) if runtime else None,
             "memory": recalled,
             "automatic_recall": recall_report,
             "ledger": ledger_context(events, location, config["ledger_limit"]),
@@ -345,7 +361,15 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             if control:
                 control.check()
             request_id = memory.begin_request(request, observation_id, report, model_settings["name"])
-            decision, trace = control.decide(agent, request) if control else agent.decide(request)
+            def check_generation():
+                if control:
+                    control.check()
+                if runtime:
+                    runtime.check()
+            if runtime:
+                decision, trace = bounded_decision(agent, request, runtime.policy["generation_seconds"], check_generation)
+            else:
+                decision, trace = control.decide(agent, request) if control else agent.decide(request)
             if storage:
                 storage.check()
             write_json(prefix.with_suffix(".model.json"), trace)
