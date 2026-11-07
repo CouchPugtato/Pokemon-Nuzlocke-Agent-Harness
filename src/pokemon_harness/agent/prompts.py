@@ -61,6 +61,11 @@ Corrections append a new event referencing the original key; never erase history
 World memories describe landmarks and connections supported by screenshots.
 Store completed objectives as resolved. Never store a predicted result as completed.
 On recovery, inspect the current screen; do not automatically repeat an uncertain action.
+If intervention is present, control was handed back to the user or focus was lost.
+Manual play or save loading may have changed the game. Reassess the fresh screenshot;
+old location, party and progress claims may be stale. Do not replay the previous plan.
+Inspect visible state as needed and stop if consequential Nuzlocke history cannot be
+reconciled. A fresh screenshot does not prove that unseen history is unchanged.
 Return exactly the requested JSON decision. A stop action ends this invocation.
 """
 

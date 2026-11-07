@@ -13,6 +13,7 @@ from contextlib import ExitStack
 
 from .interface import Capture
 from ..control.ownership import EmulatorOwnership, WindowsTarget
+from ..control.handoff import ControlLost
 
 
 class WindowsDesktopEmulator:
@@ -33,6 +34,8 @@ class WindowsDesktopEmulator:
         if self.input_mode not in {"scancode", "virtual_key"}:
             raise ValueError("emulator.input_mode must be scancode or virtual_key")
         self.held = set()
+        self._control_started = False
+        self._control_lost = None
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._configure_api()
         self.bindings = config["buttons"]
@@ -142,24 +145,40 @@ class WindowsDesktopEmulator:
         return matches[0]
 
     def _check_focus(self):
+        if getattr(self, "_control_lost", None):
+            raise ControlLost(self._control_lost)
         self.ownership.check()
         self.target.check()
         if not self.user32.IsWindow(self.hwnd) or self.user32.IsIconic(self.hwnd):
-            raise RuntimeError(f"{self.display_name} window is closed or minimized")
+            raise ControlLost(f"{self.display_name} window is closed or minimized")
         if self.user32.GetForegroundWindow() != self.hwnd:
-            raise RuntimeError(f"{self.display_name} lost focus; no further key-down events will be sent")
+            raise ControlLost(f"{self.display_name} lost focus; no further key-down events will be sent")
         if not self.user32.IsWindowEnabled(self.hwnd):
-            raise RuntimeError("Close the emulator's settings dialog before running controller input")
+            raise ControlLost("Close the emulator's settings dialog before running controller input")
+
+    def check_control(self):
+        """Read-only watchdog; once lost, control cannot return within this session."""
+        if not self._control_started:
+            return
+        try:
+            self._check_focus()
+        except (RuntimeError, OSError) as exc:
+            self._control_lost = str(exc)
+            raise ControlLost(self._control_lost) from exc
 
     def _focus(self):
         self.ownership.check()
         self.target.check()
+        if getattr(self, "_control_started", False):
+            self.check_control()
+            return
         if self.user32.GetForegroundWindow() != self.hwnd:
             self.user32.SetForegroundWindow(self.hwnd)
             time.sleep(0.15)
         self._check_focus()
         if self.config.get("focus_game_area", False):
             self._focus_game_area()
+        self._control_started = True
 
     def _focus_game_area(self):
         """A foreground frame can still have its toolbar focused rather than GLCanvas."""

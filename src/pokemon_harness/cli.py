@@ -90,6 +90,9 @@ def play_run(args):
         result = run(config, emulator, agent, args.turns, control=RunControl(directory))
     if result.get("reason") == "user_stop":
         print("Harness stopped. Memory saved; inputs released. Use pokemon-harness resume.")
+    elif result.get("reason") in {"manual_handoff", "control_lost"}:
+        print("Control returned to you. Memory saved; inputs released. "
+              "Resume will inspect a fresh screenshot and receive an intervention warning.")
     print(json.dumps(result))
 
 
@@ -121,6 +124,10 @@ def main(argv=None):
     stop.add_argument("run_dir", nargs="?", type=Path)
     stop.add_argument("--session", help="Target an exact active session ID")
     stop.add_argument("--runs-dir", type=Path, help="Restrict selection to runs below this directory")
+    handoff = commands.add_parser("handoff", help="Stop the active harness for manual play")
+    handoff.add_argument("run_dir", nargs="?", type=Path)
+    handoff.add_argument("--session", help="Target an exact active session ID")
+    handoff.add_argument("--runs-dir", type=Path, help="Restrict selection to runs below this directory")
     capture = commands.add_parser("capture", help="Save a live screenshot to verify cropping and bindings")
     capture.add_argument("--config", required=True, type=Path)
     capture.add_argument("--output", type=Path, default=Path("capture.png"))
@@ -137,9 +144,10 @@ def main(argv=None):
     try:
         if args.command in {"run", "resume"}:
             play_run(args)
-        elif args.command in {"stop", "pause"}:
+        elif args.command in {"stop", "pause", "handoff"}:
             session = select_session(args.run_dir, args.session, args.runs_dir)
-            request_stop(session["run_dir"], session["session_id"])
+            kind = "handoff" if args.command == "handoff" else "stop"
+            request_stop(session["run_dir"], session["session_id"], kind=kind)
             print(f"Stop requested for session {session['session_id']} ({session['run_dir']}). "
                   "The current move may finish. Wait for the harness to confirm it stopped.")
         elif args.command == "status":

@@ -6,6 +6,8 @@ from .agent.lmstudio import InvalidModelResponse
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
 from .control.session import StopRequested
+from .control.handoff import ControlLost
+from .control.registry import read_record
 from .memory.database import Memory
 from .memory.retrieval import ledger_context, recent_turn_context, retrieve
 from .rules.nuzlocke import unresolved_events
@@ -29,13 +31,23 @@ def run(config, emulator, agent, turns=20, control=None):
                 memory.note("recovery", recovered)
             try:
                 return _loop(config, emulator, agent, turns, memory, run_dir, recovered, control)
-            except (StopRequested, KeyboardInterrupt):
+            except (ControlLost, StopRequested, KeyboardInterrupt) as exc:
                 if control is None:
                     raise
-                memory.note("user_stop", {"message": "Harness stopped; emulator continues running"})
+                reason = "control_lost" if isinstance(exc, ControlLost) else getattr(exc, "reason", "user_stop")
+                if reason in {"control_lost", "manual_handoff"}:
+                    handoff = {"reason": reason, "message": str(exc),
+                               "session_id": control.record["session_id"],
+                               "last_observation_id": (memory.previous_observation() or {}).get("id")}
+                    memory.note("control_handoff", handoff)
+                    write_json(run_dir / ".handoff.json", handoff)
+                else:
+                    memory.note("user_stop", {"message": "Harness stopped; emulator continues running"})
                 print("Stopping harness; saving memory and releasing inputs. Emulator keeps running.")
-                return {"reason": "user_stop"}
+                return {"reason": reason}
         finally:
+            if control:
+                control.finish_monitoring()
             try:
                 emulator.close()
             finally:
@@ -53,6 +65,10 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
     previous = memory.previous_observation()
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
     current_image, observation_id, timing = _capture(memory, run_dir, emulator)
+    if control:
+        control.set_guard(getattr(emulator, "check_control", None))
+        control.check()
+    intervention = read_record(run_dir / ".handoff.json")
     completed = 0
     sequence_images = []
     for _ in range(turns):
@@ -60,7 +76,7 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
             control.check()
         decision, current_image, previous_image, observation_id, timing = _choose_decision(
             config, emulator, agent, memory, run_dir, current_image, previous_image,
-            observation_id, timing, recovered, sequence_images, control)
+            observation_id, timing, recovered, sequence_images, control, intervention)
         if control:
             control.check()
         try:
@@ -110,6 +126,11 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
                 previous_image, current_image, observation_id = current_image, result_image, result_id
                 timing = result_timing
             memory.status(turn_id, "completed")
+            if intervention:
+                memory.note("resume_after_handoff", {"handoff": intervention,
+                                                     "fresh_observation_id": decision["observation_id"]})
+                (run_dir / ".handoff.json").unlink(missing_ok=True)
+                intervention = None
         except StopRequested:
             memory.status(turn_id, "stopped", "User stopped before the next move")
             raise
@@ -128,7 +149,8 @@ def _capture(memory, run_dir, emulator):
 
 
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
-                     previous_image, observation_id, timing, recovered, sequence_images=None, control=None):
+                     previous_image, observation_id, timing, recovered, sequence_images=None, control=None,
+                     intervention=None):
     """Read-only searches do not execute inputs or consume controller turns."""
     budget = config.get("memory_search_rounds", 3)
     search_results = []
@@ -139,6 +161,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
         context = {
             "observation_id": observation_id,
             "objective": config["objective"], "rules": config["rules"],
+            "intervention": intervention,
             "action_limit_frames": config["max_action_frames"],
             "max_sequence_length": config.get("max_sequence_length", 5),
             "sequence_delay_ms": config.get("sequence_delay_ms", 250),

@@ -11,10 +11,15 @@ from pathlib import Path
 from ..telemetry.recorder import RunLock
 from ..telemetry.recorder import write_json
 from .registry import read_record, register_session, unregister_session
+from .handoff import ControlLost
 
 
 class StopRequested(KeyboardInterrupt):
-    pass
+    reason = "user_stop"
+
+
+class HandoffRequested(StopRequested):
+    reason = "manual_handoff"
 
 
 class RunControl:
@@ -29,40 +34,62 @@ class RunControl:
         self.finished = threading.Event()
         self.watcher = None
         self.record = None
+        self.guard = None
+        self.guard_error = None
 
     def start(self):
         # Called only after acquiring the run lock, before accepting new requests.
         self.path.unlink(missing_ok=True)
         self.stopped.clear()
         self.finished.clear()
+        self.guard_error = None
         self.was_down = self.key_down() if self.key_down else False
         self.record = {"session_id": uuid.uuid4().hex, "run_dir": str(self.path.parent.resolve()),
                        "pid": os.getpid(), "started_at": datetime.now(timezone.utc).isoformat()}
         register_session(self.record)
         print(f"Session: {self.record['session_id']}", flush=True)
-        if self.key_down:
-            self.watcher = threading.Thread(target=self._watch_hotkey, daemon=True)
-            self.watcher.start()
+        self.watcher = threading.Thread(target=self._watch_hotkey, daemon=True)
+        self.watcher.start()
 
     def _watch_hotkey(self):
         while not self.finished.wait(0.03):
-            down = self.key_down()
+            down = self.key_down() if self.key_down else False
             if down and not self.was_down:
                 self.stopped.set()
             self.was_down = down
+            self._check_guard()
 
-    def close(self):
+    def set_guard(self, guard):
+        self.guard = guard
+
+    def _check_guard(self):
+        guard = self.guard
+        if guard and self.guard_error is None:
+            try:
+                guard()
+            except Exception as exc:
+                self.guard_error = str(exc) or type(exc).__name__
+
+    def finish_monitoring(self):
         self.finished.set()
         if self.watcher:
             self.watcher.join(timeout=1)
+
+    def close(self):
+        self.finish_monitoring()
         if self.record:
             unregister_session(self.record)
 
     def check(self):
         request = read_record(self.path)
-        if self.stopped.is_set() or (self.record and request
-                                     and request.get("session_id") == self.record["session_id"]):
+        matching_request = self.record and request and request.get("session_id") == self.record["session_id"]
+        if matching_request and request.get("kind") == "handoff":
+            raise HandoffRequested("User requested manual control")
+        if self.stopped.is_set() or matching_request:
             raise StopRequested("User requested a harness stop")
+        self._check_guard()
+        if self.guard_error is not None:
+            raise ControlLost(self.guard_error)
 
     def wait(self, seconds):
         deadline = time.monotonic() + seconds
@@ -98,7 +125,9 @@ class RunControl:
             raise value
 
 
-def request_stop(run_dir, session_id=None):
+def request_stop(run_dir, session_id=None, kind="stop"):
+    if kind not in {"stop", "handoff"}:
+        raise ValueError("Unknown control request kind")
     directory = Path(run_dir)
     if not (directory / ".lock").is_file():
         raise ValueError("This run is not running")
@@ -109,6 +138,6 @@ def request_stop(run_dir, session_id=None):
         record = read_record(directory / ".session.json")
         if not record or (session_id is not None and record.get("session_id") != session_id):
             raise ValueError("The requested session is no longer active")
-        write_json(directory / ".stop", {"session_id": record["session_id"]})
+        write_json(directory / ".stop", {"session_id": record["session_id"], "kind": kind})
         return record["session_id"]
     raise ValueError("This run is not running")
