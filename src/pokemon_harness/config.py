@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from .telemetry.storage import storage_settings
 from .memory.progress import progress_settings
+from .agent.context_budget import budget_settings
 
 
 def load_config(path):
@@ -19,6 +20,7 @@ def load_config(path):
     if not isinstance(value["model"], dict) or not isinstance(value["emulator"], dict):
         raise ValueError("model and emulator must be objects")
     value["model"].setdefault("context_length", 32768)
+    value["model"]["context_budget"] = budget_settings(value["model"])
     if type(value["model"]["context_length"]) is not int or value["model"]["context_length"] < 1024:
         raise ValueError("model.context_length must be an integer of at least 1024")
     value["run_dir"] = str((path.parent / value["run_dir"]).resolve())

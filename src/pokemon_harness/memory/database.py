@@ -8,6 +8,7 @@ from .working_state import WorkingState
 from .outcomes import Outcomes
 from .progress import Progress
 from .contradictions import Contradictions
+from .budgets import BudgetCalibration
 from ..control.loop_detection import image_features
 from ..telemetry.cleanup import cleanup_operations
 
@@ -62,6 +63,7 @@ class Memory:
         self.outcomes = Outcomes(self.connection)
         self.progress = Progress(self.connection, self.outcomes)
         self.contradictions = Contradictions(self.connection, self.escalations)
+        self.budgets = BudgetCalibration(self.connection)
 
     def initialize(self, config):
         # keeping the objective and rules fixed across sessions

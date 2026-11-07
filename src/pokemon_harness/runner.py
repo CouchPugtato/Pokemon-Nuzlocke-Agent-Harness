@@ -3,8 +3,8 @@ import time
 import sys
 import json
 
-from .agent.prompts import messages
-from .agent.lmstudio import InvalidModelResponse
+from .agent.lmstudio import InvalidModelResponse, LMStudio
+from .agent.context_budget import ContextBudgetError, calibration_key, fit_request, validate_visual_reviews
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
 from .control.session import StopRequested
@@ -261,18 +261,31 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
         traces.mkdir(exist_ok=True)
         prefix = traces / f"observation-{observation_id:06d}"
         write_json(prefix.with_suffix(".context.json"), context)
+        model_settings = agent.config if isinstance(agent, LMStudio) else config["model"]
+        key = calibration_key(model_settings)
         try:
             print(f"Observation {observation_id}: requesting model decision "
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
             outcome_images = _outcome_images(memory, run_dir, context["outcome_review"]["next_plan"],
                                              context["progress"]["representative_observation_ids"])
-            request = messages(context, current_image, previous_image, sequence_images, outcome_images)
+            factor = memory.budgets.factor(key)
+            loaded_context = agent.loaded_context_length if isinstance(agent, LMStudio) else None
+            context, request, report = fit_request(context, model_settings, current_image, previous_image,
+                                                   sequence_images, outcome_images, loaded_context, factor)
+            write_json(prefix.with_suffix(".context.json"), context)
+            write_json(prefix.with_suffix(".budget.json"), report)
+            if report["omitted"]:
+                print(f"Context budget: omitted optional context {report['omitted']}", flush=True)
+            if isinstance(agent, LMStudio):
+                agent.budget_factor = factor
             decision, trace = control.decide(agent, request) if control else agent.decide(request)
             if storage:
                 storage.check()
             write_json(prefix.with_suffix(".model.json"), trace)
+            memory.budgets.record(key, trace.get("context_budget", {}), observation_id)
             validate_decision(decision, observation_id, config["max_action_frames"],
                               config.get("max_sequence_length", 5))
+            validate_visual_reviews(decision, context)
             kind = decision["action"]["kind"]
             if kind == "review_outcomes":
                 if review_count == review_budget:
@@ -301,8 +314,13 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             if storage:
                 cleanup_operations([("emergency reserve", storage.release_reserve)], exc)
             if isinstance(exc, InvalidModelResponse):
+                cleanup_operations([("context calibration", lambda: memory.budgets.record(
+                    key, exc.trace.get("context_budget", {}), observation_id))], exc)
                 cleanup_operations([("failed model trace", lambda: write_json(
                     prefix.with_suffix(".model.json"), exc.trace))], exc)
+            if isinstance(exc, ContextBudgetError):
+                cleanup_operations([("context budget error", lambda: write_json(
+                    prefix.with_suffix(".budget.json"), exc.report))], exc)
             cleanup_operations([("decision error", lambda: memory.note(
                 "decision_error", {"observation_id": observation_id, "error": str(exc)}))], exc)
             raise

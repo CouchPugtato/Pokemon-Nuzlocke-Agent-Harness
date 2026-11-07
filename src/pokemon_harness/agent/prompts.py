@@ -92,6 +92,12 @@ Available information:
   scope=contradictions to retrieve others. Disputed facts and their invalidated
   dependents are excluded from automatic recall, but remain searchable with their
   original fact IDs, evidence IDs, dependency IDs and memory_validity labels.
+- request_budget reports approximate input sizing, effective output allowance and
+  optional context omissions. The output allowance includes reasoning and JSON.
+  Missing history or an omitted screenshot never establishes that nothing happened.
+- outcome_visual_evidence_ids lists observation IDs whose images are supplied in
+  THIS request. Review a step as uncertain if either its before or after image is
+  absent, even if the archive contains it. Do not invent an image from its ID.
 - memory contains automatically selected latest facts. It is only a subset of
   saved memory. Omission does not mean a fact was deleted or never recorded.
 - ledger contains retired Pokemon, encounter areas, and recent/local events.
@@ -339,15 +345,17 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
             content.append(image(frame["image"]))
             shown[frame["image"]] = f"outcome evidence observation {frame['observation_id']}"
     for frame in sequence_images or []:
-        if frame["image"] not in (current_image, previous_image):
-            label = f"Historical sequence result: move {frame['step_index']}, observation {frame['observation_id']}"
-            reference = shown.get(frame["image"])
-            content.append({"type": "text", "text": label + (f" (same image as {reference}):" if reference else ":")})
-            if not reference:
-                content.append(image(frame["image"]))
-                shown[frame["image"]] = f"sequence observation {frame['observation_id']}"
+        label = f"Historical sequence result: move {frame['step_index']}, observation {frame['observation_id']}"
+        reference = shown.get(frame["image"])
+        content.append({"type": "text", "text": label + (f" (same image as {reference}):" if reference else ":")})
+        if not reference:
+            content.append(image(frame["image"]))
+            shown[frame["image"]] = f"sequence observation {frame['observation_id']}"
     if previous_image:
-        content.extend([{"type": "text", "text": "Previous observation (historical):"}, image(previous_image)])
+        content.append({"type": "text", "text": "Previous observation (historical):" +
+                        (" same image as current observation" if previous_image == current_image else "")})
+        if previous_image != current_image:
+            content.append(image(previous_image))
     content.extend([{"type": "text", "text": "Current observation:"}, image(current_image)])
     return [{"role": "system", "content": SYSTEM + "\n\n" + MEMORY_GUIDE},
             {"role": "user", "content": content}]

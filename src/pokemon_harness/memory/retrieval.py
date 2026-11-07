@@ -73,5 +73,6 @@ def ledger_context(events, location, limit=24):
     for event in relevant[-limit:]:
         chosen[event["key"]] = event
     return {"retired_pokemon": retired, "encounter_areas": encounters,
+            "badge_events": [event for event in events if event["type"] == "badge" and event["key"] not in corrected],
             "recent_or_local_events": list(chosen.values())[-2 * limit:],
             "correction_policy": "Corrections mark original events superseded; inspect their details before reuse."}

@@ -1,4 +1,4 @@
-"""OpenAI-compatible HTTP client, with no cloud fallback or automatic retries."""
+"""local structured generation without cloud fallback or automatic retries"""
 
 import json
 import os
@@ -7,6 +7,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .schemas import DECISION_SCHEMA
+from .context_budget import assess_request, budget_settings, calibrate_usage
 
 
 class InvalidModelResponse(ValueError):
@@ -23,6 +24,9 @@ class LMStudio:
             raise ValueError("model.name must be the loaded vision model identifier")
         self.inference_model = config["name"]
         self.context_length = config.get("context_length", 32768)
+        self.loaded_context_length = None
+        self.budget_factor = 1.0
+        budget_settings(config)
         if type(self.context_length) is not int or self.context_length < 1024:
             raise ValueError("model.context_length must be an integer of at least 1024")
         if type(config.get("max_tokens", 32768)) is not int or config.get("max_tokens", 32768) < 1:
@@ -47,7 +51,7 @@ class LMStudio:
             return json.loads(response.read().decode("utf-8"))
 
     def prepare(self):
-        """Load and verify context independently of the generation token budget."""
+        """loading and verifying context independently of generation limits"""
         models = self._native("")["models"]
         name = self.config["name"]
         matches = [model for model in models if name == model["key"]
@@ -66,9 +70,10 @@ class LMStudio:
             actual = instance.get("config", {}).get("context_length", 0)
             if actual >= self.context_length:
                 self.inference_model = instance["id"]
+                self.loaded_context_length = actual
                 print(f"LM Studio: {self.inference_model}, verified context {actual} tokens", flush=True)
                 return
-        # Reload only an instance of the selected model. Other models stay loaded.
+        # reloading only an instance of the selected model
         if instances:
             self._native("/unload", {"instance_id": instances[0]["id"]})
         print(f"Loading {model['key']} with context {self.context_length} tokens...", flush=True)
@@ -76,7 +81,7 @@ class LMStudio:
                    "context_length": self.context_length, "echo_load_config": True}
         loaded = self._native("/load", payload)
         actual = loaded.get("load_config", {}).get("context_length", 0)
-        # Some server versions reuse an existing instance despite load parameters.
+        # checking reused instances against the requested context
         if loaded.get("instance_id") and actual < self.context_length:
             self._native("/unload", {"instance_id": loaded["instance_id"]})
             loaded = self._native("/load", payload)
@@ -85,13 +90,19 @@ class LMStudio:
             raise ValueError(f"LM Studio did not confirm context {self.context_length}; reported {actual}. "
                              "Stopping before game input")
         self.inference_model = loaded["instance_id"]
+        self.loaded_context_length = actual
         print(f"LM Studio: {self.inference_model}, verified context {actual} tokens", flush=True)
 
     def decide(self, messages):
+        budget = assess_request(messages, self.config, self.loaded_context_length, self.budget_factor)
+        if budget["effective_output_tokens"] != budget["requested_output_tokens"]:
+            print(f"Context budget: estimated input {budget['estimated_input_tokens']}, "
+                  f"output {budget['requested_output_tokens']} -> {budget['effective_output_tokens']}, "
+                  f"safety {budget['safety_margin_tokens']} tokens", flush=True)
         payload = {
             "model": self.inference_model, "messages": messages,
             "temperature": self.config.get("temperature", 0.1),
-            "max_tokens": self.config.get("max_tokens", 32768), "stream": False,
+            "max_tokens": budget["effective_output_tokens"], "stream": False,
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "game_decision", "strict": True, "schema": DECISION_SCHEMA}},
         }
@@ -113,10 +124,12 @@ class LMStudio:
                                    "No controller input was sent for this observation.") from exc
             raise
         settings = {key: value for key, value in payload.items() if key != "messages"}
-        trace = {"raw_response": raw, "request_settings": settings}
+        trace = {"raw_response": raw, "request_settings": settings, "context_budget": budget}
         try:
             envelope = json.loads(raw)
-            trace = {"response": envelope, "request_settings": settings}
+            budget["calibration_suggestion"] = calibrate_usage(budget, envelope.get("usage"))
+            self.budget_factor = budget["calibration_suggestion"]
+            trace = {"response": envelope, "request_settings": settings, "context_budget": budget}
             choice = envelope["choices"][0]
             finish_reason = choice.get("finish_reason")
             if finish_reason != "stop":
@@ -138,6 +151,6 @@ class LMStudio:
             value = json.loads(choice["message"]["content"])
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise InvalidModelResponse(f"Invalid LM Studio response: {exc}", trace) from exc
-        # Screenshots already live in the observation archive; do not duplicate
-        # base64 images in every trace file.
+        # screenshots staying in the observation archive
+        # avoiding duplicate image bytes in traces
         return value, trace
