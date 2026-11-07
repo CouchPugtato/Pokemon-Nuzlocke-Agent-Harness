@@ -29,13 +29,14 @@ def load_config(path):
     value.setdefault("memory_limit", 24)
     value.setdefault("ledger_limit", 24)
     value.setdefault("memory_search_rounds", 3)
+    value.setdefault("outcome_review_rounds", 3)
     value.setdefault("rules", ["First eligible encounter per area may be caught.",
                                 "Fainted Pokemon are permanently retired.",
                                 "Nickname every captured Pokemon."])
     for key, lower, upper in [("max_action_frames", 1, 120), ("recent_turns", 1, 20),
                               ("max_sequence_length", 1, 20), ("sequence_delay_ms", 0, 60000),
                               ("memory_limit", 1, 100), ("ledger_limit", 1, 100),
-                              ("memory_search_rounds", 0, 5)]:
+                              ("memory_search_rounds", 0, 5), ("outcome_review_rounds", 0, 5)]:
         if type(value[key]) is not int or not lower <= value[key] <= upper:
             raise ValueError(f"{key} must be an integer between {lower} and {upper}")
     if not isinstance(value["rules"], list) or not all(isinstance(x, str) for x in value["rules"]):

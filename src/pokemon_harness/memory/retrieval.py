@@ -1,4 +1,4 @@
-"""Bounded context selection. Durable source records are never summarized away."""
+"""bounded context selection preserving durable source records"""
 
 import re
 
@@ -8,11 +8,7 @@ def words(value):
 
 
 def recent_turn_context(turns):
-    """Recall observations and input outcomes without feeding rationales back in.
-
-    Full decisions, rationale, and controller reports remain in SQLite and traces.
-    Predicted results and speculative rationale are deliberately not evidence.
-    """
+    """recalling observations and input outcomes without speculative rationales"""
     result = []
     for turn in turns:
         decision = turn["decision"]
@@ -24,10 +20,18 @@ def recent_turn_context(turns):
             if step.get("error"):
                 item["error"] = step["error"][:200]
             steps.append(item)
+        review = turn.get("outcome_review")
+        if review:
+            review = {"turn_id": review["turn_id"], "revision": review["revision"],
+                      "reviewed_observation_id": review["reviewed_observation_id"], "steps": [
+                          {**{key: step[key] for key in ("step_index", "before_observation_id",
+                                                        "after_observation_id", "assessment")},
+                           "explanation_excerpt": step["explanation"][:200]} for step in review["steps"]]}
         result.append({
             "id": turn["id"], "observation_id": turn["observation_id"], "status": turn["status"],
             "decision": {key: decision[key] for key in ("scene", "location", "observation")},
             "action_kind": decision["action"]["kind"], "steps": steps,
+            "outcome_review": review,
         })
     return result
 
@@ -46,7 +50,7 @@ def retrieve(facts, query, observation_id, limit=24):
 
 
 def ledger_context(events, location, limit=24):
-    # Deaths and encounter eligibility stay available even after thousands of turns.
+    # deaths and encounter eligibility staying available across long runs
     retired = {}
     encounters = {}
     corrected = {e["corrects_event_key"] for e in events if e["type"] == "correction"}

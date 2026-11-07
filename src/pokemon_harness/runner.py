@@ -199,8 +199,11 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                      intervention=None, storage=None):
     """read only searches before controller input"""
     budget = config.get("memory_search_rounds", 3)
+    review_budget = config.get("outcome_review_rounds", 3)
+    search_count = 0
+    review_count = 0
     search_results = []
-    for search_round in range(budget + 1):
+    for _ in range(budget + review_budget + 1):
         if storage:
             storage.check()
         recent = memory.recent_turns(config["recent_turns"])
@@ -228,12 +231,13 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "memory_available": {
                 "latest_fact_count": len(facts), "event_count": len(events),
                 "categories": MEMORY_CATEGORIES, "history_available": True,
-                "searches_remaining": budget - search_round, "max_results_per_search": 10,
+                "searches_remaining": budget - search_count, "max_results_per_search": 10,
             },
             "memory_search_results": [dict(bundle, results=[
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
                 for record in bundle["results"]]) for bundle in search_results],
             "working_state": memory.working.current(),
+            "outcome_review": dict(memory.outcomes.context(), review_batches_remaining=review_budget - review_count),
             "recent_turns": recent_turn_context(recent), "recovery": recovered,
             "warning": loop_warning(memory.hashes()),
             "instruction": "Interpret the screenshots. Search memory if needed, or update evidenced facts and choose a bounded sequence of moves.",
@@ -245,17 +249,31 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
         try:
             print(f"Observation {observation_id}: requesting model decision "
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
-            request = messages(context, current_image, previous_image, sequence_images)
+            outcome_images = _outcome_images(memory, run_dir, context["outcome_review"]["next_plan"])
+            request = messages(context, current_image, previous_image, sequence_images, outcome_images)
             decision, trace = control.decide(agent, request) if control else agent.decide(request)
             if storage:
                 storage.check()
             write_json(prefix.with_suffix(".model.json"), trace)
             validate_decision(decision, observation_id, config["max_action_frames"],
                               config.get("max_sequence_length", 5))
-            if decision["action"]["kind"] != "search_memory":
+            kind = decision["action"]["kind"]
+            if kind == "review_outcomes":
+                if review_count == review_budget:
+                    raise ValueError("Outcome review budget exhausted; stop and resume to review remaining plans")
+                if control:
+                    control.check()
+                memory.review_outcomes(observation_id, decision["outcome_reviews"])
+                review_count += 1
+                print("Outcome review saved; no controller input sent", flush=True)
+                previous_image = current_image
+                current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
+                continue
+            if kind != "search_memory":
                 return decision, current_image, previous_image, observation_id, timing
-            if search_round == budget:
+            if search_count == budget:
                 raise ValueError("Memory search budget exhausted; no controller input was sent for this decision")
+            search_count += 1
             result = memory.search(decision["memory_search"], observation_id)
             memory.note("memory_search", result)
             write_json(prefix.with_suffix(".search.json"), result)
@@ -272,3 +290,17 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             cleanup_operations([("decision error", lambda: memory.note(
                 "decision_error", {"observation_id": observation_id, "error": str(exc)}))], exc)
             raise
+
+
+def _outcome_images(memory, run_dir, plan):
+    if plan is None:
+        return []
+    ids = {step[key] for step in plan["steps"]
+           if step["input_status"] in {"completed", "executing", "unknown"}
+           for key in ("before_observation_id", "after_observation_id") if step[key] is not None}
+    frames = []
+    for observation_id in sorted(ids):
+        row = memory.connection.execute(
+            "SELECT image_path FROM observations WHERE id=?", (observation_id,)).fetchone()
+        frames.append({"observation_id": observation_id, "image": (run_dir / row[0]).read_bytes()})
+    return frames

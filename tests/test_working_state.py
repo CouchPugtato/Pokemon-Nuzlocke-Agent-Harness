@@ -181,7 +181,7 @@ class WorkingStateTests(unittest.TestCase):
             def decide(self, request):
                 context = json.loads(request[1]["content"][0]["text"])
                 contexts.append(context)
-                value = decision(context["observation_id"])
+                value = DemoAgent().decide(request)[0]
                 if context["working_state"]["revision"] == 0:
                     value["working_state_update"] = update(subgoal=change())
                 return value, {"decision": value}

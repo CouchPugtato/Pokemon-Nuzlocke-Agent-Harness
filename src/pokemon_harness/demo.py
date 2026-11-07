@@ -40,6 +40,18 @@ class DemoAgent:
             "events": [],
             "memory_search": None,
             "working_state_update": None,
+            "outcome_reviews": demo_outcome_reviews(context),
             "additional_actions": [],
         }
         return value, {"backend": "scripted demo", "decision": value}
+
+
+def demo_outcome_reviews(context):
+    plan = context.get("outcome_review", {}).get("next_plan")
+    if not plan:
+        return []
+    return [{"turn_id": plan["turn_id"], "expected_revision": plan["expected_revision"], "steps": [
+        {"step_index": step["step_index"], "before_observation_id": step["before_observation_id"],
+         "after_observation_id": step["after_observation_id"] or context["observation_id"],
+         "assessment": "uncertain", "explanation": "Scripted fixture does not infer game progress."}
+        for step in plan["steps"] if step["input_status"] in {"completed", "executing", "unknown"}]}]

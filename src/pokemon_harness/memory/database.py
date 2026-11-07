@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from .escalations import Escalations
 from .working_state import WorkingState
+from .outcomes import Outcomes
 from ..telemetry.cleanup import cleanup_operations
 
 
@@ -55,6 +56,7 @@ class Memory:
         """)
         self.escalations = Escalations(self.connection)
         self.working = WorkingState(self.connection)
+        self.outcomes = Outcomes(self.connection)
 
     def initialize(self, config):
         # keeping the objective and rules fixed across sessions
@@ -85,6 +87,11 @@ class Memory:
     def plan(self, observation_id, decision):
         """saving facts events and plans together before input"""
         with self.connection:
+            if decision["action"]["kind"] in {"search_memory", "review_outcomes"}:
+                raise ValueError("Search and review actions cannot change working state or create controller plans")
+            self.outcomes.apply(decision.get("outcome_reviews", []), observation_id)
+            if decision["action"]["kind"] in {"press", "wait"} and self.outcomes.pending_count():
+                raise ValueError("Review pending action outcomes before another controller plan")
             for event in decision["events"]:
                 existing = self.connection.execute("SELECT payload FROM events WHERE key=?", (event["key"],)).fetchone()
                 if existing:
@@ -104,15 +111,18 @@ class Memory:
             cursor = self.connection.execute(
                 "INSERT INTO turns(observation_id,decision,status,created_at) VALUES(?,?,'planned',?)",
                 (observation_id, encode(decision), now()))
-            if decision["action"]["kind"] == "search_memory" and decision.get("working_state_update") is not None:
-                raise ValueError("Memory searches cannot change working state")
             self.working.apply(decision.get("working_state_update"), observation_id, cursor.lastrowid)
             if decision["action"]["kind"] in {"press", "wait"}:
+                self.outcomes.intent(cursor.lastrowid, self.working.current())
                 for index, action in enumerate([decision["action"], *decision.get("additional_actions", [])], 1):
                     self.connection.execute(
                         "INSERT INTO action_steps(turn_id,step_index,action,status,updated_at) VALUES(?,?,?,'planned',?)",
                         (cursor.lastrowid, index, encode(action), now()))
         return cursor.lastrowid
+
+    def review_outcomes(self, observation_id, reviews):
+        with self.connection:
+            self.outcomes.apply(reviews, observation_id)
 
     def _cancel_steps(self, turn_id, error):
         self.connection.execute(
@@ -159,6 +169,7 @@ class Memory:
             value = dict(row)
             value["decision"] = json.loads(value["decision"])
             value["execution"] = execution.get(value["id"])
+            value["outcome_review"] = self.outcomes.latest(value["id"])
             steps = self.connection.execute(
                 "SELECT * FROM action_steps WHERE turn_id=? ORDER BY step_index", (value["id"],)).fetchall()
             value["steps"] = [dict(step, action=json.loads(step["action"]),
@@ -197,7 +208,8 @@ class Memory:
     def export(self):
         return {"facts": self.facts(), "events": self.events(), "recent_turns": self.recent_turns(20),
                 "cases": self.escalations.cases(), "validity": self.escalations.validity(),
-                "working_state": self.working.current()}
+                "working_state": self.working.current(), "outcome_review": self.outcomes.context(),
+                "recent_outcome_reviews": self.outcomes.history()}
 
     def close(self):
         self.connection.close()

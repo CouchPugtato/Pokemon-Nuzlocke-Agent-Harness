@@ -31,7 +31,7 @@ Use short inputs, especially near doors and in menus. Empty buttons mean wait or
 Plan the first move in action and zero or more moves in additional_actions.
 The total number of moves, INCLUDING action, must not exceed max_sequence_length.
 Each additional move can only be press or wait and has the same frame/button limits.
-For a single move use additional_actions=[]. For stop or search_memory it MUST be [].
+For a single move use additional_actions=[]. For stop, search_memory or review_outcomes it MUST be [].
 Moves execute in order without another model decision between them. The controller
 releases all keys after each move, captures a screenshot, then waits sequence_delay_ms
 before the next move. This delay is EXTRA to each move's settle_frames and capture
@@ -81,6 +81,10 @@ Available information:
 - working_state is persistent structured recall with its own revision, location
   hypothesis, uncertainties, next_check and latest subgoal. Its evidence IDs refer
   to historical screenshots. It is fallible, including subgoal completion claims.
+- outcome_review lists how many attempted plans still need review and next_plan,
+  the oldest one. A null next_plan explicitly means no prior attempted plan needs
+  review, including at startup. Stopped, blocked and cancelled inputs alone do not
+  establish an attempt. This backlog survives restarts and manual interventions.
 - memory contains automatically selected latest facts. It is only a subset of
   saved memory. Omission does not mean a fact was deleted or never recorded.
 - ledger contains retired Pokemon, encounter areas, and recent/local events.
@@ -107,6 +111,36 @@ run_review reports run validity and explicit user overrides of review cases. An
 override permits continued input but is not newly observed evidence. Do not rewrite
 uncertain events as confirmed or claim an unverifiable run is verified. Open cases
 block input until resolved through local review commands; restarting cannot clear them.
+
+Reviewing action outcomes:
+Return outcome_reviews=[] when no review is needed or when searching memory.
+Before a new press or wait plan, review all pending attempted plans. Normally
+there is one: include its review in the same decision as your next controller plan.
+For an older backlog choose action.kind=review_outcomes to save one plan review
+without controller input, then inspect the next fresh request. This action needs
+no buttons, additional_actions=[], memory_search=null, memory_updates=[], events=[]
+and working_state_update=null. It consumes one review_batches_remaining allowance;
+when zero, stop and resume later if a backlog still prevents a controller plan.
+Stop remains available without reviews and never pretends unreviewed plans succeeded.
+Each review needs turn_id, expected_revision from next_plan, and steps containing
+exactly one entry per attempted step (input_status completed/executing/unknown).
+Omit planned or cancelled steps. Each entry needs step_index, before_observation_id,
+after_observation_id, assessment and explanation. Copy the recorded before/after IDs
+from next_plan.steps. If after is null, use the current observation and uncertain;
+missing step capture cannot establish an outcome attributable to that input.
+Use assessment=progress_observed only for concrete advancement toward the subgoal
+and objective, no_progress_observed for evidence of no relevant advancement, or
+uncertain for insufficient/contradictory evidence. Give a brief visual explanation.
+Compare the labeled outcome evidence screenshots. Expected_result_prediction is
+only the OLD prediction to test; subgoal_at_input is the goal when inputs were
+planned. A changed pixel, advancing text animation, or reopening an interaction
+does not by itself establish progress. Review a partial sequence per attempted
+step, never claim outcomes for cancelled moves. Review revisions remain archived.
+A review is a fallible model interpretation, not independent visual verification,
+not proof of a capture/badge, and not a resolution of a blocking review case.
+Uncertain input remains uncertain even after review; do not replay it blindly.
+Recent turns include compact outcome reviews with explanation excerpts, separately
+from controller status. Full explanations remain archived for local inspection.
 
 Working state and subgoals:
 Return working_state_update=null when unchanged, including on search_memory.
@@ -206,13 +240,24 @@ For ordinary press/wait/stop decisions set memory_search=null.
 """
 
 
-def messages(context, current_image, previous_image=None, sequence_images=None):
+def messages(context, current_image, previous_image=None, sequence_images=None, outcome_images=None):
     content = [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}]
+    shown = {current_image: "current observation", previous_image: "previous observation"}
+    for frame in outcome_images or []:
+        label = f"Outcome evidence observation {frame['observation_id']}"
+        reference = shown.get(frame["image"])
+        content.append({"type": "text", "text": label + (f" (same image as {reference}):" if reference else ":")})
+        if not reference:
+            content.append(image(frame["image"]))
+            shown[frame["image"]] = f"outcome evidence observation {frame['observation_id']}"
     for frame in sequence_images or []:
         if frame["image"] not in (current_image, previous_image):
-            content.extend([{"type": "text", "text":
-                f"Historical sequence result: move {frame['step_index']}, observation {frame['observation_id']}:"},
-                image(frame["image"])])
+            label = f"Historical sequence result: move {frame['step_index']}, observation {frame['observation_id']}"
+            reference = shown.get(frame["image"])
+            content.append({"type": "text", "text": label + (f" (same image as {reference}):" if reference else ":")})
+            if not reference:
+                content.append(image(frame["image"]))
+                shown[frame["image"]] = f"sequence observation {frame['observation_id']}"
     if previous_image:
         content.extend([{"type": "text", "text": "Previous observation (historical):"}, image(previous_image)])
     content.extend([{"type": "text", "text": "Current observation:"}, image(current_image)])

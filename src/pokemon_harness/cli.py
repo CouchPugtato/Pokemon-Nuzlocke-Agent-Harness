@@ -157,6 +157,12 @@ def main(argv=None):
     state.add_argument("--history", action="store_true")
     state.add_argument("--limit", type=int, default=20)
     state.add_argument("--offset", type=int, default=0)
+    outcomes = commands.add_parser("outcomes", help="Inspect pending action reviews and history for a stopped run")
+    outcomes.add_argument("run_dir", nargs="?", type=Path)
+    outcomes.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    outcomes.add_argument("--history", action="store_true")
+    outcomes.add_argument("--limit", type=int, default=20)
+    outcomes.add_argument("--offset", type=int, default=0)
     cases = commands.add_parser("cases", help="Inspect durable review cases for the latest or specified run")
     cases.add_argument("run_dir", nargs="?", type=Path)
     cases.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -201,12 +207,14 @@ def main(argv=None):
             print(json.dumps(verify_backup(args.backup_dir), indent=2))
         elif args.command == "restore":
             print(json.dumps(restore_backup(args.backup_dir, args.run_dir, args.runs_dir), indent=2))
-        elif args.command == "state":
+        elif args.command in {"state", "outcomes"}:
             directory = saved_run(args.run_dir, args.runs_dir)
             with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
-                result = {"run_dir": str(directory), "working_state": memory.working.current()}
+                store = memory.working if args.command == "state" else memory.outcomes
+                key = "working_state" if args.command == "state" else "outcome_review"
+                result = {"run_dir": str(directory), key: store.current() if args.command == "state" else store.context()}
                 if args.history:
-                    result["history"] = memory.working.history(args.limit, args.offset)
+                    result["history"] = store.history(args.limit, args.offset)
                 print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command in {"cases", "case-open", "resolve-case"}:
             directory = saved_run(args.run_dir, args.runs_dir)

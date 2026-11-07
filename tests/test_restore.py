@@ -148,7 +148,8 @@ class RestoreTests(unittest.TestCase):
 
     def test_pending_actions_are_recovered_as_unknown_without_execution(self):
         with contextlib.closing(Memory(self.source / "memory.sqlite")) as memory:
-            value, trace = DemoAgent().decide(messages({"observation_id": 3}, b"png"))
+            value, trace = DemoAgent().decide(messages(
+                {"observation_id": 3, "outcome_review": memory.outcomes.context()}, b"png"))
             turn = memory.plan(3, value)
             memory.status(turn, "executing")
             memory.step_status(turn, 1, "executing")

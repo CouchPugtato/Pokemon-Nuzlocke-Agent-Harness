@@ -59,6 +59,19 @@ MOVE_SCHEMA = obj({
     "settle_frames": {"type": "integer", "minimum": 0, "maximum": 120},
 })
 
+OUTCOME_REVIEW = obj({
+    "turn_id": {"type": "integer", "minimum": 1},
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "steps": {"type": "array", "minItems": 1, "maxItems": 20, "items": obj({
+        "step_index": {"type": "integer", "minimum": 1, "maximum": 20},
+        "before_observation_id": {"type": "integer", "minimum": 1},
+        "after_observation_id": {"type": "integer", "minimum": 1},
+        "assessment": {"type": "string", "enum": [
+            "progress_observed", "no_progress_observed", "uncertain"]},
+        "explanation": {**text(), "minLength": 1},
+    })},
+})
+
 
 DECISION_SCHEMA = obj({
     "observation_id": {"type": "integer", "minimum": 1},
@@ -68,7 +81,7 @@ DECISION_SCHEMA = obj({
     "decision_reason": {**text(4000), "description":
         "Explanation of the chosen action sequence, search, or stop. Empty is allowed; use only as much detail as helpful."},
     "action": obj({
-        "kind": {"type": "string", "enum": ["press", "wait", "stop", "search_memory"]},
+        "kind": {"type": "string", "enum": ["press", "wait", "stop", "search_memory", "review_outcomes"]},
         "buttons": {"type": "array", "items": {"type": "string", "enum": BUTTONS},
                     "uniqueItems": True, "maxItems": 3},
         "hold_frames": {"type": "integer", "minimum": 1, "maximum": 120},
@@ -78,6 +91,7 @@ DECISION_SCHEMA = obj({
     "additional_actions": {"type": "array", "items": MOVE_SCHEMA, "maxItems": 19},
     "memory_search": {"anyOf": [{"type": "null"}, MEMORY_SEARCH_SCHEMA]},
     "working_state_update": {"anyOf": [{"type": "null"}, WORKING_STATE_UPDATE]},
+    "outcome_reviews": {"type": "array", "maxItems": 1, "items": OUTCOME_REVIEW},
     "memory_updates": {"type": "array", "maxItems": 12, "items": obj({
         "category": {"type": "string", "enum": MEMORY_CATEGORIES},
         "key": {"type": "string", "minLength": 1, "maxLength": 120},
@@ -106,8 +120,8 @@ def validate_decision(value, observation_id, max_frames=60, max_sequence_length=
     actions = [value["action"], *value["additional_actions"]]
     if len(actions) > max_sequence_length:
         raise ValueError(f"Action sequence exceeds configured limit of {max_sequence_length} moves")
-    if value["action"]["kind"] in {"stop", "search_memory"} and value["additional_actions"]:
-        raise ValueError("Stop and search_memory decisions cannot queue controller actions")
+    if value["action"]["kind"] in {"stop", "search_memory", "review_outcomes"} and value["additional_actions"]:
+        raise ValueError("Stop, search_memory and review_outcomes decisions cannot queue controller actions")
     for action in actions:
         validate_action(action, max_frames)
     action = value["action"]
@@ -115,10 +129,16 @@ def validate_decision(value, observation_id, max_frames=60, max_sequence_length=
     if (action["kind"] == "search_memory") != (search is not None):
         raise ValueError("Only search_memory actions must supply a memory_search request")
     if search is not None:
-        if value["memory_updates"] or value["events"] or value["working_state_update"] is not None:
+        if (value["memory_updates"] or value["events"] or value["working_state_update"] is not None
+                or value["outcome_reviews"]):
             raise ValueError("Memory searches are read-only; return empty memory_updates and events and null working_state_update")
         if search["category"] and search["scope"] != "facts":
             raise ValueError("A memory category filter requires scope=facts")
+    if action["kind"] == "review_outcomes":
+        if not value["outcome_reviews"]:
+            raise ValueError("review_outcomes requires an outcome review")
+        if value["memory_updates"] or value["events"] or value["working_state_update"] is not None:
+            raise ValueError("review_outcomes only writes outcome reviews")
     for event in value["events"]:
         if (event["type"] == "correction") != bool(event["corrects_event_key"]):
             raise ValueError("Only corrections must reference an existing event key")
