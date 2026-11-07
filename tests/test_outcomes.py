@@ -229,6 +229,10 @@ class OutcomeIntegrationTests(unittest.TestCase):
         run(self.config, ReplayEmulator(self.images), DemoAgent(), turns=2)
         with contextlib.closing(Memory(self.directory / "memory.sqlite")) as memory:
             with memory.connection:
+                # simulating history from before checkpoint tracking
+                memory.connection.execute("DELETE FROM conversation_active")
+                memory.connection.execute("DELETE FROM conversation_checkpoint_tail")
+                memory.connection.execute("DELETE FROM conversation_checkpoints")
                 memory.connection.execute("DELETE FROM outcome_reviews")
             self.assertEqual(memory.outcomes.pending_count(), 2)
 

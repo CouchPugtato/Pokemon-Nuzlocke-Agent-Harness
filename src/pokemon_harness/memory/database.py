@@ -9,6 +9,7 @@ from .outcomes import Outcomes
 from .progress import Progress
 from .contradictions import Contradictions
 from .budgets import BudgetCalibration
+from .conversation import Conversation, SOURCE_TABLES
 from ..control.loop_detection import image_features
 from ..telemetry.cleanup import cleanup_operations
 
@@ -64,6 +65,7 @@ class Memory:
         self.progress = Progress(self.connection, self.outcomes)
         self.contradictions = Contradictions(self.connection, self.escalations)
         self.budgets = BudgetCalibration(self.connection)
+        self.conversation = Conversation(self.connection)
 
     def initialize(self, config):
         # keeping the objective and rules fixed across sessions
@@ -83,6 +85,7 @@ class Memory:
                 (now(), str(path), digest, timing))
             if features is not None:
                 self.connection.execute("INSERT INTO observation_features VALUES(?,?)", (cursor.lastrowid, encode(features)))
+            self.conversation.append("observation", {"image_hash": digest, "timing": timing}, cursor.lastrowid)
         return cursor.lastrowid
 
     def recover(self):
@@ -93,9 +96,11 @@ class Memory:
                 self.connection.execute("UPDATE turns SET status='unknown', error=?, finished_at=? WHERE id=?",
                                         ("Process ended before completion was recorded", now(), row["id"]))
                 self._cancel_steps(row["id"], "Process ended before sequence completion")
+                self.conversation.turn_status(row["id"], "unknown", "Process ended before completion was recorded")
+            self.conversation.recover()
         return [dict(row) for row in rows]
 
-    def plan(self, observation_id, decision):
+    def plan(self, observation_id, decision, request_id=None):
         """saving facts events and plans together before input"""
         with self.connection:
             if decision["action"]["kind"] in {"search_memory", "review_outcomes"}:
@@ -145,12 +150,54 @@ class Memory:
                     self.connection.execute(
                         "INSERT INTO action_steps(turn_id,step_index,action,status,updated_at) VALUES(?,?,?,'planned',?)",
                         (cursor.lastrowid, index, encode(action), now()))
+            if request_id is not None:
+                self.conversation.link(request_id, cursor.lastrowid, observation_id, decision)
         return cursor.lastrowid
 
-    def review_outcomes(self, observation_id, reviews):
+    def review_outcomes(self, observation_id, reviews, request_id=None):
         with self.connection:
             self.outcomes.apply(reviews, observation_id)
             self.progress.refresh()
+            if request_id is not None:
+                self.conversation.complete_readonly(request_id, observation_id, "review_completed",
+                                                    {"reviews": reviews})
+
+    def begin_request(self, request, observation_id, report, model):
+        with self.connection:
+            return self.conversation.begin(request, observation_id, report, model)
+
+    def record_response(self, request_id, decision, trace_path):
+        with self.connection:
+            self.conversation.respond(request_id, decision, trace_path)
+
+    def validate_response(self, request_id):
+        with self.connection:
+            self.conversation.validate(request_id)
+
+    def fail_request(self, request_id, status, reason):
+        with self.connection:
+            self.conversation.fail(request_id, status, reason)
+
+    def record_search(self, request_id, observation_id, result):
+        with self.connection:
+            self.connection.execute("INSERT INTO notes(kind,payload,created_at) VALUES('memory_search',?,?)", (encode(result), now()))
+            self.conversation.complete_readonly(request_id, observation_id, "search_completed", result)
+
+    def save_checkpoint(self):
+        with self.connection:
+            self.conversation.active_checkpoint()
+            row = self.connection.execute("SELECT value FROM metadata WHERE key='identity'").fetchone()
+            if row is None:
+                raise ValueError("Initialize the run before checkpointing its conversation")
+            progress = self.progress.refresh()
+            cases = self.escalations.cases()
+            snapshot = {"schema_version": 1, "identity": json.loads(row[0]), "working_state": self.working_context(),
+                        "progress": progress, "outcome_review": self.outcomes.context(),
+                        "review": {"validity": self.escalations.validity(), "case_count": len(cases),
+                                   "blocking_case_ids": [case["id"] for case in cases if case["blocking"]]},
+                        "source_watermarks": {table: self.connection.execute(
+                            f"SELECT COALESCE(MAX(id),0) FROM {table}").fetchone()[0] for table in SOURCE_TABLES}}
+            return self.conversation.checkpoint(snapshot)
 
     def monitor_progress(self):
         with self.connection:
@@ -174,6 +221,7 @@ class Memory:
                 "WHERE turn_id=? AND step_index=?",
                 (status, observation_id, encode(execution) if execution is not None else None,
                  now(), turn_id, index))
+            self.conversation.step(turn_id, index, status, observation_id, execution)
 
     def status(self, turn_id, status, error=None):
         if status not in {"executing", "completed", "unknown", "stopped", "blocked"}:
@@ -183,11 +231,14 @@ class Memory:
                                     (status, error, now() if status != "executing" else None, turn_id))
             if status in {"unknown", "blocked", "stopped"}:
                 self._cancel_steps(turn_id, error)
+            self.conversation.turn_status(turn_id, status, error)
 
     def note(self, kind, payload):
         with self.connection:
             self.connection.execute("INSERT INTO notes(kind,payload,created_at) VALUES(?,?,?)",
                                     (kind, encode(payload), now()))
+            if kind in {"user_stop", "control_handoff", "resume_after_handoff", "recovery"}:
+                self.conversation.append(kind, payload)
 
     def previous_observation(self):
         row = self.connection.execute("SELECT * FROM observations ORDER BY id DESC LIMIT 1").fetchone()
@@ -257,7 +308,8 @@ class Memory:
                 "recent_outcome_reviews": self.outcomes.history(),
                 "progress": self.monitor_progress(), "recent_progress_events": self.progress.history(),
                 "contradictions": self.contradictions.context(),
-                "recent_contradiction_revisions": self.contradictions.records(True, 20)}
+                "recent_contradiction_revisions": self.contradictions.records(True, 20),
+                "conversation": self.conversation.context()}
 
     def close(self):
         self.connection.close()

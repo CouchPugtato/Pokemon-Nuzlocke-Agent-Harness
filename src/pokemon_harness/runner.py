@@ -43,6 +43,7 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
         storage.start()
         memory = Memory(run_dir / "memory.sqlite")
         memory.initialize(config)
+        memory.conversation.active_checkpoint()
         if control:
             control.start()
         write_json(run_dir / "config.json", config)
@@ -78,11 +79,16 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
             operations.append(("control monitor", control.finish_monitoring))
         operations.append(("emulator", emulator.close))
         if memory is not None:
+            def checkpoint():
+                memory.recover()
+                storage.check(128 * 1024)
+                memory.save_checkpoint()
+
             def export():
                 value = memory.export()
                 storage.check(len(json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")))
                 write_json(run_dir / "memory-export.json", value)
-            operations.extend([("memory export", export), ("database", memory.close)])
+            operations.extend([("conversation checkpoint", checkpoint), ("memory export", export), ("database", memory.close)])
         if control:
             operations.append(("session", control.close))
         cleanup_operations(operations, sys.exc_info()[1])
@@ -106,7 +112,7 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
     for _ in range(turns):
         if control:
             control.check()
-        decision, current_image, previous_image, observation_id, timing = _choose_decision(
+        decision, current_image, previous_image, observation_id, timing, request_id = _choose_decision(
             config, emulator, agent, memory, run_dir, current_image, previous_image,
             observation_id, timing, recovered, sequence_images, control, intervention, storage)
         if control:
@@ -114,10 +120,11 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
         try:
             if storage:
                 storage.check()
-            turn_id = memory.plan(observation_id, decision)
+            turn_id = memory.plan(observation_id, decision, request_id)
         except Exception as exc:
             if storage:
                 cleanup_operations([("emergency reserve", storage.release_reserve)], exc)
+            cleanup_operations([("uncommitted conversation", lambda: memory.fail_request(request_id, "failed", str(exc)))], exc)
             cleanup_operations([("decision error", lambda: memory.note(
                 "decision_error", {"observation_id": observation_id, "error": str(exc)}))], exc)
             raise
@@ -250,6 +257,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
                 for record in bundle["results"]]) for bundle in search_results],
             "working_state": memory.working_context(),
+            "conversation": memory.conversation.context(),
             "contradictions": memory.contradictions.context(),
             "progress": memory.monitor_progress(),
             "outcome_review": dict(memory.outcomes.context(), review_batches_remaining=review_budget - review_count),
@@ -263,6 +271,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
         write_json(prefix.with_suffix(".context.json"), context)
         model_settings = agent.config if isinstance(agent, LMStudio) else config["model"]
         key = calibration_key(model_settings)
+        request_id = None
         try:
             print(f"Observation {observation_id}: requesting model decision "
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
@@ -278,33 +287,38 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                 print(f"Context budget: omitted optional context {report['omitted']}", flush=True)
             if isinstance(agent, LMStudio):
                 agent.budget_factor = factor
+            if control:
+                control.check()
+            request_id = memory.begin_request(request, observation_id, report, model_settings["name"])
             decision, trace = control.decide(agent, request) if control else agent.decide(request)
             if storage:
                 storage.check()
             write_json(prefix.with_suffix(".model.json"), trace)
+            memory.record_response(request_id, decision, prefix.with_suffix(".model.json").relative_to(run_dir).as_posix())
             memory.budgets.record(key, trace.get("context_budget", {}), observation_id)
             validate_decision(decision, observation_id, config["max_action_frames"],
                               config.get("max_sequence_length", 5))
             validate_visual_reviews(decision, context)
+            memory.validate_response(request_id)
             kind = decision["action"]["kind"]
             if kind == "review_outcomes":
                 if review_count == review_budget:
                     raise ValueError("Outcome review budget exhausted; stop and resume to review remaining plans")
                 if control:
                     control.check()
-                memory.review_outcomes(observation_id, decision["outcome_reviews"])
+                memory.review_outcomes(observation_id, decision["outcome_reviews"], request_id)
                 review_count += 1
                 print("Outcome review saved; no controller input sent", flush=True)
                 previous_image = current_image
                 current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
                 continue
             if kind != "search_memory":
-                return decision, current_image, previous_image, observation_id, timing
+                return decision, current_image, previous_image, observation_id, timing, request_id
             if search_count == budget:
                 raise ValueError("Memory search budget exhausted; no controller input was sent for this decision")
             search_count += 1
             result = memory.search(decision["memory_search"], observation_id)
-            memory.note("memory_search", result)
+            memory.record_search(request_id, observation_id, result)
             write_json(prefix.with_suffix(".search.json"), result)
             search_results.append(result)
             print(f"Memory search: {result['total_matches']} matches; returning {len(result['results'])} records", flush=True)
@@ -321,6 +335,9 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             if isinstance(exc, ContextBudgetError):
                 cleanup_operations([("context budget error", lambda: write_json(
                     prefix.with_suffix(".budget.json"), exc.report))], exc)
+            if request_id is not None:
+                cleanup_operations([("failed conversation request", lambda: memory.fail_request(
+                    request_id, "interrupted" if isinstance(exc, ControlLost) else "failed", str(exc)))], exc)
             cleanup_operations([("decision error", lambda: memory.note(
                 "decision_error", {"observation_id": observation_id, "error": str(exc)}))], exc)
             raise

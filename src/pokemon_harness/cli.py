@@ -177,6 +177,17 @@ def main(argv=None):
     conflicts.add_argument("--history", action="store_true")
     conflicts.add_argument("--limit", type=int, default=20)
     conflicts.add_argument("--offset", type=int, default=0)
+    conversation = commands.add_parser("conversation", help="Inspect the conversation journal for a stopped run")
+    conversation.add_argument("run_dir", nargs="?", type=Path)
+    conversation.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    conversation.add_argument("--history", action="store_true")
+    conversation.add_argument("--limit", type=int, default=20)
+    conversation.add_argument("--offset", type=int, default=0)
+    conversation.add_argument("--request", type=int, help="Show an archived request with observation image references")
+    conversation.add_argument("--checkpoint", action="store_true", help="Show the full latest checkpoint snapshot")
+    checkpoint = commands.add_parser("checkpoint", help="Commit a conversation checkpoint without starting the emulator")
+    checkpoint.add_argument("run_dir", nargs="?", type=Path)
+    checkpoint.add_argument("--runs-dir", type=Path, default=Path("runs"))
     cases = commands.add_parser("cases", help="Inspect durable review cases for the latest or specified run")
     cases.add_argument("run_dir", nargs="?", type=Path)
     cases.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -221,6 +232,28 @@ def main(argv=None):
             print(json.dumps(verify_backup(args.backup_dir), indent=2))
         elif args.command == "restore":
             print(json.dumps(restore_backup(args.backup_dir, args.run_dir, args.runs_dir), indent=2))
+        elif args.command == "checkpoint":
+            directory = saved_run(args.run_dir, args.runs_dir)
+            config = load_config(directory / "config.json")
+            StorageGuard(config).check(128 * 1024)
+            with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+                memory.initialize(config)
+                memory.conversation.active_checkpoint()
+                memory.recover()
+                checkpoint_id = memory.save_checkpoint()
+                print(json.dumps({"run_dir": str(directory), "checkpoint_id": checkpoint_id,
+                                  "boundary_id": memory.conversation.active_checkpoint()["boundary_id"]}, indent=2))
+        elif args.command == "conversation":
+            directory = saved_run(args.run_dir, args.runs_dir)
+            with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+                result = {"run_dir": str(directory), "conversation": memory.conversation.context()}
+                if args.history:
+                    result["history"] = memory.conversation.history(args.limit, args.offset)
+                if args.request is not None:
+                    result["request"] = memory.conversation.request(args.request)
+                if args.checkpoint:
+                    result["checkpoint"] = memory.conversation.active_checkpoint()
+                print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command in {"state", "outcomes", "progress", "contradictions"}:
             directory = saved_run(args.run_dir, args.runs_dir)
             with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
