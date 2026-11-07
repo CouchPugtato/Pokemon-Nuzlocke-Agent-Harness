@@ -260,6 +260,64 @@ class OutcomeTests(unittest.TestCase):
 
 
 class OutcomeIntegrationTests(unittest.TestCase):
+    def test_missing_review_gets_one_readonly_correction_before_a_fresh_controller_decision(self):
+        run(self.config, ReplayEmulator(self.images), DemoAgent(), turns=1)
+        contexts = []
+        requests = []
+
+        class Reviewer:
+            def decide(self, request):
+                context = json.loads(request[1]["content"][0]["text"])
+                contexts.append(context)
+                requests.append(request)
+                value, trace = DemoAgent().decide(request)
+                if len(contexts) == 1:
+                    value["outcome_reviews"] = []
+                    value["memory_updates"][0]["key"] = "discarded:proposal"
+                elif context.get("review_correction"):
+                    value.update(memory_updates=[], events=[])
+                    value["action"].update(kind="review_outcomes", buttons=[])
+                return value, trace
+
+        emulator = ReplayEmulator(self.images)
+        result = run(self.config, emulator, Reviewer(), turns=1)
+        self.assertEqual(result["completed_actions"], 1)
+        self.assertEqual(len(emulator.actions), 1)
+        self.assertEqual(len(contexts), 3)
+        self.assertEqual(contexts[1]["review_correction"]["pending_turn_id"], 1)
+        self.assertIn("REVIEW REQUIRED", requests[1][1]["content"][1]["text"])
+        self.assertGreater(contexts[1]["observation_id"], contexts[0]["observation_id"])
+        self.assertGreater(contexts[2]["observation_id"], contexts[1]["observation_id"])
+        self.assertIsNone(contexts[2]["review_correction"])
+        self.assertEqual(contexts[2]["outcome_review"]["pending_count"], 0)
+        with contextlib.closing(Memory(self.directory / "memory.sqlite")) as memory:
+            self.assertFalse(any(item["key"] == "discarded:proposal" for item in memory.facts(True)))
+            self.assertEqual(memory.conversation.request(2)["status"], "failed")
+            self.assertEqual(memory.conversation.request(3)["status"], "review_completed")
+            self.assertEqual(len(memory.outcomes.history()), 1)
+
+    def test_correction_cannot_smuggle_an_inline_review_with_controller_input(self):
+        run(self.config, ReplayEmulator(self.images), DemoAgent(), turns=1)
+        contexts = []
+
+        class Reviewer:
+            def decide(self, request):
+                context = json.loads(request[1]["content"][0]["text"])
+                contexts.append(context)
+                value, trace = DemoAgent().decide(request)
+                if len(contexts) == 1:
+                    value["outcome_reviews"] = []
+                return value, trace
+
+        emulator = ReplayEmulator(self.images)
+        with self.assertRaisesRegex(ValueError, "correction exhausted"):
+            run(self.config, emulator, Reviewer(), turns=1)
+        self.assertEqual(len(contexts), 2)
+        self.assertEqual(emulator.actions, [])
+        with contextlib.closing(Memory(self.directory / "memory.sqlite")) as memory:
+            self.assertEqual(memory.outcomes.pending_count(), 1)
+            self.assertEqual(memory.outcomes.history(), [])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

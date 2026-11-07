@@ -389,6 +389,14 @@ For ordinary press/wait/stop decisions set memory_search=null.
 
 def messages(context, current_image, previous_image=None, sequence_images=None, outcome_images=None):
     content = [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}]
+    if context.get("review_correction"):
+        content.append({"type": "text", "text": (
+            "REVIEW REQUIRED: Your preceding controller proposal was discarded because it omitted a pending outcome review. "
+            "Choose action.kind=review_outcomes and review outcome_review.next_plan with its exact turn id, revision and attempted steps. "
+            "Use uncertain when either evidence image is absent or unclear. Do not invent success. "
+            "Return memory_updates=[], events=[], additional_actions=[], memory_search=null, working_state_update=null, "
+            "contradiction_updates=[] and empty memory dependencies. No press or wait is permitted in this correction. "
+            "You may search_memory within its remaining budget or stop instead. A fresh screenshot and new decision follow a saved review.")})
     shown = {current_image: "current observation", previous_image: "previous observation"}
     for frame in outcome_images or []:
         purpose = {"loop": "Loop", "archive": "Archived historical"}.get(frame.get("purpose"), "Outcome")

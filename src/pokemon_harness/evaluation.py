@@ -83,6 +83,8 @@ def input_plan(decision):
 
 def validate_context_gates(decision, context):
     controller = decision["action"]["kind"] in {"press", "wait"}
+    if controller and context.get("review_correction"):
+        raise ValueError("Proposal bypasses the archived read only review correction")
     pending = context.get("outcome_review", {})
     plan = pending.get("next_plan")
     reviews = decision["outcome_reviews"]

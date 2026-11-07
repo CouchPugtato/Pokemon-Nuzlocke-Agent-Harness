@@ -252,13 +252,15 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
     review_budget = config.get("outcome_review_rounds", 3)
     search_count = 0
     review_count = 0
+    review_correction = None
+    review_corrections = 0
     search_results = []
     archive_images = []
     archive_policy = archive_settings(config)
     settings = compaction_settings(config)
     compacted = False
     pressure = False
-    for _ in range(budget + review_budget + 2):
+    for _ in range(budget + review_budget + 3):
         if runtime:
             runtime.check()
         if storage:
@@ -321,6 +323,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "contradictions": memory.contradictions.context(),
             "progress": memory.monitor_progress(),
             "outcome_review": dict(memory.outcomes.context(), review_batches_remaining=review_budget - review_count),
+            "review_correction": review_correction,
             "recent_turns": recent_turn_context(recent), "recovery": recovered,
             "warning": loop_warning(memory.hashes()),
             "instruction": "Interpret the screenshots. Search memory if needed, or update evidenced facts and choose a bounded sequence of moves.",
@@ -378,14 +381,30 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             validate_decision(decision, observation_id, config["max_action_frames"],
                               config.get("max_sequence_length", 5))
             validate_visual_reviews(decision, context)
-            memory.validate_response(request_id)
             kind = decision["action"]["kind"]
+            pending = context["outcome_review"]
+            if kind in {"press", "wait"} and pending["pending_count"] and (
+                    not decision["outcome_reviews"] or review_correction is not None):
+                reason = "Review pending action outcomes before another controller plan"
+                if review_corrections or review_count >= review_budget:
+                    raise ValueError(reason + "; bounded review correction exhausted")
+                memory.fail_request(request_id, "failed", reason)
+                review_corrections += 1
+                review_correction = {"rejected_request_id": request_id, "pending_turn_id": pending["next_plan"]["turn_id"],
+                                     "required_action": "review_outcomes", "reason": reason}
+                memory.note("review_correction", dict(review_correction, observation_id=observation_id))
+                print("Missing outcome review; discarding proposed input and requesting one read-only correction", flush=True)
+                previous_image = current_image
+                current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control, decision["scene"])
+                continue
+            memory.validate_response(request_id)
             if kind == "review_outcomes":
                 if review_count == review_budget:
                     raise ValueError("Outcome review budget exhausted; stop and resume to review remaining plans")
                 if control:
                     control.check()
                 memory.review_outcomes(observation_id, decision["outcome_reviews"], request_id)
+                review_correction = None
                 review_count += 1
                 print("Outcome review saved; no controller input sent", flush=True)
                 previous_image = current_image
