@@ -154,7 +154,7 @@ class LMStudio:
             if "anyOf" in schema:
                 Draft202012Validator(schema).validate(value)
         except ValidationError as exc:
-            raise InvalidModelResponse(f"Invalid LM Studio review response: {exc.message[:600]}", trace) from exc
+            raise InvalidModelResponse(f"Invalid LM Studio phase response: {exc.message[:600]}", trace) from exc
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise InvalidModelResponse(f"Invalid LM Studio response: {exc}", trace) from exc
         # screenshots staying in the observation archive

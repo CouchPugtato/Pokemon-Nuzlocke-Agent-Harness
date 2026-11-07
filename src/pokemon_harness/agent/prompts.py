@@ -33,6 +33,11 @@ A fresh harness run creates fresh agent memory, not a new game save. Inspect the
 before choosing New Game or Continue; never reset existing progress just because memory
 is empty. Inspect the configured battle-style setting at the first safe opportunity.
 Use short inputs, especially near doors and in menus. Empty buttons mean wait or stop.
+Fully displayed dialogue normally waits for A to advance. Waiting lets animations
+run but does not confirm dialogue. If a wait leaves the same complete text visible,
+reassess for a short A press rather than repeatedly waiting for automatic advancement.
+A professor greeting alone does not establish starter ownership, prior story events
+or a town location. Keep those claims uncertain without visible acquisition evidence.
 Plan the first move in action and zero or more moves in additional_actions.
 The total number of moves, INCLUDING action, must not exceed max_sequence_length.
 Each additional move can only be press or wait and has the same frame/button limits.
@@ -396,6 +401,13 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
             "Review each attempted step using its recorded before/after observation IDs and revision. "
             "Use uncertain when evidence is missing or ambiguous. Return no memory, event, dependency or working state writes, "
             "and strategy=null, recovery_plan=null. A fresh screenshot and new decision follow the saved review.")})
+    elif context.get("progress", {}).get("requires_recovery"):
+        content.append({"type": "text", "text": (
+            "RECOVERY PHASE: Normal controller plans are unavailable. Choose one safe alternative input with a non-null "
+            "recovery_plan using progress.episode_id and an evidence-based explanation, or search_memory or stop. "
+            "The schema excludes prior recovery input signatures, requires a single move, and forbids state and ledger writes. "
+            "Only wait tests are allowed in battle, unknown or transition scenes; if no permitted input is safe, stop. "
+            "Do not relabel an uncertain scene to unlock an input. Review the test result before proceeding.")})
     if context.get("review_correction"):
         content.append({"type": "text", "text": (
             "REVIEW REQUIRED: Your preceding controller proposal was discarded because it omitted a pending outcome review. "

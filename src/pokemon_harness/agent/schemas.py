@@ -157,15 +157,9 @@ DECISION_SCHEMA = obj({
 })
 
 
-def schema_for_context(context):
-    pending = context.get("outcome_review", {})
-    if not pending.get("pending_count"):
-        return DECISION_SCHEMA
-    plan = pending.get("next_plan")
-    if not plan:
-        raise ValueError("Pending outcome review has no available plan")
-    review = copy.deepcopy(DECISION_SCHEMA)
-    fields = review["properties"]
+def restricted_schema():
+    schema = copy.deepcopy(DECISION_SCHEMA)
+    fields = schema["properties"]
     empty = {"type": "array", "maxItems": 0}
     for key in ("additional_actions", "memory_updates", "events", "contradiction_updates"):
         fields[key] = copy.deepcopy(empty)
@@ -173,6 +167,63 @@ def schema_for_context(context):
         fields[key] = {"type": "null"}
     fields["memory_dependencies"] = obj({"facts": copy.deepcopy(empty), "working_state": {"type": "null"},
                                          "working_state_events": {"type": "null"}})
+    return schema
+
+
+def recovery_schema(context):
+    progress = context["progress"]
+    base = restricted_schema()
+    base["properties"]["outcome_reviews"] = {"type": "array", "maxItems": 0}
+    stop = copy.deepcopy(base)
+    stop["properties"]["action"] = obj({"kind": {"type": "string", "enum": ["stop"]},
+        "buttons": {"type": "array", "maxItems": 0}, "hold_frames": {"type": "integer", "enum": [1]},
+        "settle_frames": {"type": "integer", "enum": [0]}})
+    choices = []
+    if progress.get("recovery_attempts_remaining", 0):
+        forbidden = [*progress.get("recovery_signatures", []), progress.get("last_input_signature")]
+
+        def permitted(kind, buttons):
+            signature = json.dumps(((kind, tuple(sorted(buttons))),))
+            return all(value is None or signature != json.dumps(value) for value in forbidden)
+
+        for kind in ("press", "wait"):
+            buttons = [[button] for button in BUTTONS if permitted(kind, [button])] if kind == "press" else ([[]] if permitted(kind, []) else [])
+            if not buttons:
+                continue
+            test = copy.deepcopy(base)
+            fields = test["properties"]
+            maximum = context.get("action_limit_frames", 60)
+            fields["action"] = obj({"kind": {"type": "string", "enum": [kind]}, "buttons": {"type": "array", "enum": buttons},
+                "hold_frames": {"type": "integer", "minimum": 1, "maximum": maximum},
+                "settle_frames": {"type": "integer", "minimum": 0, "maximum": maximum}})
+            if kind == "press":
+                fields["scene"]["enum"] = ["overworld", "dialogue", "menu"]
+            fields["strategy"] = copy.deepcopy(DECISION_SCHEMA["properties"]["strategy"]["anyOf"][1])
+            fields["strategy"]["properties"]["kind"]["enum"] = ["inspect_menu", "move", "interact", "advance_dialogue", "wait"]
+            fields["recovery_plan"] = copy.deepcopy(DECISION_SCHEMA["properties"]["recovery_plan"]["anyOf"][1])
+            fields["recovery_plan"]["properties"]["episode_id"]["enum"] = [progress["episode_id"]]
+            fields["recovery_plan"]["properties"]["explanation"]["minLength"] = 1
+            choices.append(test)
+    if context.get("memory_available", {}).get("searches_remaining", 0):
+        search = copy.deepcopy(stop)
+        search["properties"]["action"]["properties"]["kind"]["enum"] = ["search_memory"]
+        search["properties"]["memory_search"] = copy.deepcopy(MEMORY_SEARCH_SCHEMA)
+        search["properties"]["memory_search"]["properties"]["scope"]["enum"] = ["all"]
+        search["properties"]["memory_search"]["properties"]["category"]["enum"] = [""]
+        choices.append(search)
+    return {"anyOf": [*choices, stop]}
+
+
+def schema_for_context(context):
+    pending = context.get("outcome_review", {})
+    if not pending.get("pending_count"):
+        return recovery_schema(context) if context.get("progress", {}).get("requires_recovery") else DECISION_SCHEMA
+    plan = pending.get("next_plan")
+    if not plan:
+        raise ValueError("Pending outcome review has no available plan")
+    review = restricted_schema()
+    fields = review["properties"]
+    empty = {"type": "array", "maxItems": 0}
     fields["action"] = obj({"kind": {"type": "string", "enum": ["review_outcomes"]},
                             "buttons": copy.deepcopy(empty), "hold_frames": {"type": "integer", "enum": [1]},
                             "settle_frames": {"type": "integer", "enum": [0]}})
