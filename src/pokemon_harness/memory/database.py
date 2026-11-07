@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from .escalations import Escalations
+from ..telemetry.cleanup import cleanup_operations
 
 
 def now():
@@ -17,6 +18,13 @@ def encode(value):
 class Memory:
     def __init__(self, path):
         self.connection = sqlite3.connect(path)
+        try:
+            self._initialize_schema()
+        except BaseException as exc:
+            cleanup_operations([("database", self.connection.close)], exc)
+            raise
+
+    def _initialize_schema(self):
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript("""
             PRAGMA journal_mode=WAL;

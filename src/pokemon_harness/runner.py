@@ -1,5 +1,7 @@
 from pathlib import Path
 import time
+import sys
+import json
 
 from .agent.prompts import messages
 from .agent.lmstudio import InvalidModelResponse
@@ -11,64 +13,81 @@ from .control.registry import read_record
 from .memory.database import Memory
 from .memory.retrieval import ledger_context, recent_turn_context, retrieve
 from .telemetry.recorder import RunLock, save_capture, write_json
+from .telemetry.storage import StorageGuard
+from .telemetry.cleanup import cleanup_operations
 
 
 def run(config, emulator, agent, turns=20, control=None):
-    if type(turns) is not int or turns < 1:
-        raise ValueError("turns must be a positive integer")
-    run_dir = Path(config["run_dir"])
-    run_dir.mkdir(parents=True, exist_ok=True)
-    with RunLock(run_dir / ".lock"):
+    cleanup_started = False
+    try:
+        if type(turns) is not int or turns < 1:
+            raise ValueError("turns must be a positive integer")
+        storage = StorageGuard(config)
+        storage.check()
+        run_dir = Path(config["run_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with RunLock(run_dir / ".lock"):
+            cleanup_started = True
+            return _run_locked(config, emulator, agent, turns, control, run_dir, storage)
+    finally:
+        if not cleanup_started:
+            cleanup_operations([("emulator", emulator.close)], sys.exc_info()[1])
+
+
+def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
+    memory = None
+    try:
+        storage.start()
         memory = Memory(run_dir / "memory.sqlite")
+        memory.initialize(config)
+        if control:
+            control.start()
+        write_json(run_dir / "config.json", config)
+        recovered = memory.recover()
+        if recovered:
+            memory.note("recovery", recovered)
+        review = memory.escalations.review(memory.events())
+        if review["blocked_cases"] or review["validity"] == "invalid":
+            print("Run needs review before input. Use pokemon-harness cases.")
+            return {"reason": "review_required", "case_ids": [case["id"] for case in review["blocked_cases"]],
+                    "validity": review["validity"]}
         try:
-            memory.initialize(config)
-            if control:
-                control.start()
-            write_json(run_dir / "config.json", config)
-            recovered = memory.recover()
-            if recovered:
-                memory.note("recovery", recovered)
-            review = memory.escalations.review(memory.events())
-            if review["blocked_cases"] or review["validity"] == "invalid":
-                print("Run needs review before input. Use pokemon-harness cases.")
-                return {"reason": "review_required", "case_ids": [case["id"] for case in review["blocked_cases"]],
-                        "validity": review["validity"]}
-            try:
-                return _loop(config, emulator, agent, turns, memory, run_dir, recovered, control)
-            except (ControlLost, StopRequested, KeyboardInterrupt) as exc:
-                if control is None:
-                    raise
-                reason = "control_lost" if isinstance(exc, ControlLost) else getattr(exc, "reason", "user_stop")
-                if reason in {"control_lost", "manual_handoff"}:
-                    handoff = {"reason": reason, "message": str(exc),
-                               "session_id": control.record["session_id"],
-                               "last_observation_id": (memory.previous_observation() or {}).get("id")}
-                    memory.note("control_handoff", handoff)
-                    write_json(run_dir / ".handoff.json", handoff)
-                else:
-                    memory.note("user_stop", {"message": "Harness stopped; emulator continues running"})
-                print("Stopping harness; saving memory and releasing inputs. Emulator keeps running.")
-                return {"reason": reason}
-        finally:
-            if control:
-                control.finish_monitoring()
-            try:
-                emulator.close()
-            finally:
-                try:
-                    try:
-                        write_json(run_dir / "memory-export.json", memory.export())
-                    finally:
-                        memory.close()
-                finally:
-                    if control:
-                        control.close()
+            return _loop(config, emulator, agent, turns, memory, run_dir, recovered, control, storage)
+        except (ControlLost, StopRequested, KeyboardInterrupt) as exc:
+            if control is None:
+                raise
+            storage.release_reserve()
+            reason = "control_lost" if isinstance(exc, ControlLost) else getattr(exc, "reason", "user_stop")
+            if reason in {"control_lost", "manual_handoff"}:
+                handoff = {"reason": reason, "message": str(exc),
+                           "session_id": control.record["session_id"],
+                           "last_observation_id": (memory.previous_observation() or {}).get("id")}
+                memory.note("control_handoff", handoff)
+                write_json(run_dir / ".handoff.json", handoff)
+            else:
+                memory.note("user_stop", {"message": "Harness stopped; emulator continues running"})
+            print("Stopping harness; saving memory and releasing inputs. Emulator keeps running.")
+            return {"reason": reason}
+    finally:
+        operations = [("emergency reserve", storage.release_reserve)]
+        if control:
+            operations.append(("control monitor", control.finish_monitoring))
+        operations.append(("emulator", emulator.close))
+        if memory is not None:
+            def export():
+                value = memory.export()
+                storage.check(len(json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")))
+                write_json(run_dir / "memory-export.json", value)
+            operations.extend([("memory export", export), ("database", memory.close)])
+        if control:
+            operations.append(("session", control.close))
+        cleanup_operations(operations, sys.exc_info()[1])
 
 
-def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None):
+def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None, storage=None):
     previous = memory.previous_observation()
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
-    current_image, observation_id, timing = _capture(memory, run_dir, emulator)
+    current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
     if control:
         control.set_guard(getattr(emulator, "check_control", None))
         control.check()
@@ -80,13 +99,18 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
             control.check()
         decision, current_image, previous_image, observation_id, timing = _choose_decision(
             config, emulator, agent, memory, run_dir, current_image, previous_image,
-            observation_id, timing, recovered, sequence_images, control, intervention)
+            observation_id, timing, recovered, sequence_images, control, intervention, storage)
         if control:
             control.check()
         try:
+            if storage:
+                storage.check()
             turn_id = memory.plan(observation_id, decision)
         except Exception as exc:
-            memory.note("decision_error", {"observation_id": observation_id, "error": str(exc)})
+            if storage:
+                cleanup_operations([("emergency reserve", storage.release_reserve)], exc)
+            cleanup_operations([("decision error", lambda: memory.note(
+                "decision_error", {"observation_id": observation_id, "error": str(exc)}))], exc)
             raise
 
         review = memory.escalations.review(memory.events())
@@ -115,9 +139,13 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
                         control.wait(delay)
                     else:
                         time.sleep(delay)
+                if storage:
+                    storage.check()
+                if control:
+                    control.check()
                 memory.step_status(turn_id, index, "executing")
                 execution = emulator.execute(action)
-                result_image, result_id, result_timing = _capture(memory, run_dir, emulator)
+                result_image, result_id, result_timing = _capture(memory, run_dir, emulator, storage)
                 memory.note("action_result", {"turn_id": turn_id, "observation_id": result_id,
                                               "execution": execution, "step_index": index,
                                               "sequence_length": len(actions)})
@@ -136,18 +164,28 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
                                                      "fresh_observation_id": decision["observation_id"]})
                 (run_dir / ".handoff.json").unlink(missing_ok=True)
                 intervention = None
-        except StopRequested:
-            memory.status(turn_id, "stopped", "User stopped before the next move")
+        except StopRequested as exc:
+            if storage:
+                cleanup_operations([("emergency reserve", storage.release_reserve)], exc)
+            cleanup_operations([("stopped plan", lambda: memory.status(
+                turn_id, "stopped", "User stopped before the next move"))], exc)
             raise
         except BaseException as exc:
-            memory.status(turn_id, "unknown", str(exc) or type(exc).__name__)
+            if storage:
+                cleanup_operations([("emergency reserve", storage.release_reserve)], exc)
+            cleanup_operations([("uncertain plan", lambda: memory.status(
+                turn_id, "unknown", str(exc) or type(exc).__name__))], exc)
             raise
         recovered = []
     return {"completed_actions": completed, "reason": "turn_limit"}
 
 
-def _capture(memory, run_dir, emulator):
+def _capture(memory, run_dir, emulator, storage=None):
+    if storage:
+        storage.check()
     capture = emulator.capture()
+    if storage:
+        storage.check(len(capture.image))
     path, digest = save_capture(run_dir, capture)
     observation_id = memory.observe(path, digest, capture.timing)
     return capture.image, observation_id, capture.timing
@@ -155,11 +193,13 @@ def _capture(memory, run_dir, emulator):
 
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                      previous_image, observation_id, timing, recovered, sequence_images=None, control=None,
-                     intervention=None):
+                     intervention=None, storage=None):
     """read only searches before controller input"""
     budget = config.get("memory_search_rounds", 3)
     search_results = []
     for search_round in range(budget + 1):
+        if storage:
+            storage.check()
         recent = memory.recent_turns(config["recent_turns"])
         location = recent[-1]["decision"].get("location", "") if recent else ""
         facts, events = memory.facts(), memory.events()
@@ -203,6 +243,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
             request = messages(context, current_image, previous_image, sequence_images)
             decision, trace = control.decide(agent, request) if control else agent.decide(request)
+            if storage:
+                storage.check()
             write_json(prefix.with_suffix(".model.json"), trace)
             validate_decision(decision, observation_id, config["max_action_frames"],
                               config.get("max_sequence_length", 5))
@@ -216,9 +258,13 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             search_results.append(result)
             print(f"Memory search: {result['total_matches']} matches; returning {len(result['results'])} records", flush=True)
             previous_image = current_image
-            current_image, observation_id, timing = _capture(memory, run_dir, emulator)
+            current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
         except Exception as exc:
+            if storage:
+                cleanup_operations([("emergency reserve", storage.release_reserve)], exc)
             if isinstance(exc, InvalidModelResponse):
-                write_json(prefix.with_suffix(".model.json"), exc.trace)
-            memory.note("decision_error", {"observation_id": observation_id, "error": str(exc)})
+                cleanup_operations([("failed model trace", lambda: write_json(
+                    prefix.with_suffix(".model.json"), exc.trace))], exc)
+            cleanup_operations([("decision error", lambda: memory.note(
+                "decision_error", {"observation_id": observation_id, "error": str(exc)}))], exc)
             raise

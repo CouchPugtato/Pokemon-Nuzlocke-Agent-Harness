@@ -16,6 +16,8 @@ from .emulator.interface import ReplayEmulator
 from .memory.database import Memory
 from .runner import run
 from .telemetry.recorder import RunLock, write_json
+from .telemetry.storage import StorageGuard
+from .telemetry.cleanup import closing_safely
 
 
 def emulator_for(config, config_path):
@@ -54,6 +56,7 @@ def play_run(args):
         config_path = directory / "config.json"
         config = load_config(config_path)
         config["run_dir"] = str(directory)
+        StorageGuard(config).check()
         # checking durable cases before loading a model or opening the emulator
         with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
             review = memory.escalations.review(memory.events())
@@ -82,10 +85,11 @@ def play_run(args):
         config["model"]["max_tokens"] = args.max_tokens
     if args.thinking is not None:
         config["model"]["thinking"] = args.thinking == "on"
+    StorageGuard(config).check()
     agent = LMStudio(config["model"])
     # holding emulator ownership before model loading
     # releasing ownership on startup and run failures
-    with closing(emulator_for(config, config_path)) as emulator:
+    with closing_safely(emulator_for(config, config_path), "emulator") as emulator:
         agent.prepare()
         thinking = ("on" if config["model"]["thinking"] else "off") if "thinking" in config["model"] else "model default"
         print(f"Generation: max_tokens={config['model'].get('max_tokens', 32768)}, thinking={thinking}", flush=True)
@@ -223,7 +227,8 @@ def main(argv=None):
         else:
             config = load_config(args.config)
             if args.command == "input-test":
-                with closing(emulator_for(config, args.config)) as emulator:
+                StorageGuard(config).check()
+                with closing_safely(emulator_for(config, args.config), "emulator") as emulator:
                     input_test(config, emulator, args.button, args.hold_frames, args.settle_frames)
             else:
                 emulator = emulator_for(config, args.config)
