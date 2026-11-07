@@ -6,6 +6,7 @@ runs/
 build/
 dist/
 .pytest_cache/
+*.txt
 
 # Generated local run configurations and default diagnostic capture
 /configs/first-gym-*.json

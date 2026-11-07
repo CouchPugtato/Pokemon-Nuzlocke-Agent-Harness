@@ -10,6 +10,7 @@ from .config import load_config
 from .agent.schemas import BUTTONS
 from .control.diagnostics import input_test
 from .control.session import RunControl, request_stop
+from .control.registry import active_sessions, select_session
 from .emulator.interface import ReplayEmulator
 from .memory.database import Memory
 from .runner import run
@@ -81,8 +82,12 @@ def play_run(args):
     print(f"Generation: max_tokens={config['model'].get('max_tokens', 32768)}, thinking={thinking}", flush=True)
     emulator = emulator_for(config, config_path)
     print(f"Run: {directory}\nObjective: {config['objective']}", flush=True)
-    print("Stop: F8, Ctrl+C, or pokemon-harness stop in another terminal. Emulator keeps running.", flush=True)
-    print(json.dumps(run(config, emulator, agent, args.turns, control=RunControl(directory))))
+    print("Stop: F8 (all local harnesses), Ctrl+C, or pokemon-harness stop in another terminal. "
+          "Emulator keeps running.", flush=True)
+    result = run(config, emulator, agent, args.turns, control=RunControl(directory))
+    if result.get("reason") == "user_stop":
+        print("Harness stopped. Memory saved; inputs released. Use pokemon-harness resume.")
+    print(json.dumps(result))
 
 
 def main(argv=None):
@@ -107,9 +112,12 @@ def main(argv=None):
     resume.add_argument("--context-length", type=int, help="Override the saved model's load-time context size")
     resume.add_argument("--max-tokens", type=int, help="Override the saved generation output budget")
     resume.add_argument("--thinking", choices=["on", "off"], help="Toggle thinking for compatible model templates")
-    stop = commands.add_parser("stop", aliases=["pause"], help="Stop the latest harness without pausing the emulator")
+    status = commands.add_parser("status", help="List active harness sessions")
+    status.add_argument("--json", action="store_true", help="Print machine-readable session records")
+    stop = commands.add_parser("stop", aliases=["pause"], help="Stop the active harness without pausing the emulator")
     stop.add_argument("run_dir", nargs="?", type=Path)
-    stop.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    stop.add_argument("--session", help="Target an exact active session ID")
+    stop.add_argument("--runs-dir", type=Path, help="Restrict selection to runs below this directory")
     capture = commands.add_parser("capture", help="Save a live screenshot to verify cropping and bindings")
     capture.add_argument("--config", required=True, type=Path)
     capture.add_argument("--output", type=Path, default=Path("capture.png"))
@@ -127,9 +135,19 @@ def main(argv=None):
         if args.command in {"run", "resume"}:
             play_run(args)
         elif args.command in {"stop", "pause"}:
-            directory = saved_run(args.run_dir, args.runs_dir)
-            request_stop(directory)
-            print(f"Stop requested for {directory}. The current move may finish; no further moves will start.")
+            session = select_session(args.run_dir, args.session, args.runs_dir)
+            request_stop(session["run_dir"], session["session_id"])
+            print(f"Stop requested for session {session['session_id']} ({session['run_dir']}). "
+                  "The current move may finish. Wait for the harness to confirm it stopped.")
+        elif args.command == "status":
+            sessions = active_sessions()
+            if args.json:
+                print(json.dumps(sessions, indent=2))
+            elif not sessions:
+                print("No active harness sessions")
+            else:
+                for session in sessions:
+                    print(f"{session['session_id']}  PID {session['pid']}  {session['run_dir']}")
         elif args.command == "memory":
             path = args.run_dir / "memory.sqlite"
             if not path.is_file():

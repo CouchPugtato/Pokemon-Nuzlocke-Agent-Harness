@@ -4,9 +4,13 @@ import os
 import queue
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..telemetry.recorder import RunLock
+from ..telemetry.recorder import write_json
+from .registry import read_record, register_session, unregister_session
 
 
 class StopRequested(KeyboardInterrupt):
@@ -24,6 +28,7 @@ class RunControl:
         self.stopped = threading.Event()
         self.finished = threading.Event()
         self.watcher = None
+        self.record = None
 
     def start(self):
         # Called only after acquiring the run lock, before accepting new requests.
@@ -31,6 +36,10 @@ class RunControl:
         self.stopped.clear()
         self.finished.clear()
         self.was_down = self.key_down() if self.key_down else False
+        self.record = {"session_id": uuid.uuid4().hex, "run_dir": str(self.path.parent.resolve()),
+                       "pid": os.getpid(), "started_at": datetime.now(timezone.utc).isoformat()}
+        register_session(self.record)
+        print(f"Session: {self.record['session_id']}", flush=True)
         if self.key_down:
             self.watcher = threading.Thread(target=self._watch_hotkey, daemon=True)
             self.watcher.start()
@@ -46,9 +55,13 @@ class RunControl:
         self.finished.set()
         if self.watcher:
             self.watcher.join(timeout=1)
+        if self.record:
+            unregister_session(self.record)
 
     def check(self):
-        if self.stopped.is_set() or self.path.exists():
+        request = read_record(self.path)
+        if self.stopped.is_set() or (self.record and request
+                                     and request.get("session_id") == self.record["session_id"]):
             raise StopRequested("User requested a harness stop")
 
     def wait(self, seconds):
@@ -85,7 +98,7 @@ class RunControl:
             raise value
 
 
-def request_stop(run_dir):
+def request_stop(run_dir, session_id=None):
     directory = Path(run_dir)
     if not (directory / ".lock").is_file():
         raise ValueError("This run is not running")
@@ -93,6 +106,9 @@ def request_stop(run_dir):
         with RunLock(directory / ".lock"):
             pass
     except RuntimeError:
-        (directory / ".stop").touch()
-        return
+        record = read_record(directory / ".session.json")
+        if not record or (session_id is not None and record.get("session_id") != session_id):
+            raise ValueError("The requested session is no longer active")
+        write_json(directory / ".stop", {"session_id": record["session_id"]})
+        return record["session_id"]
     raise ValueError("This run is not running")

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from pokemon_harness.cli import main, saved_run
 from pokemon_harness.config import load_config
 from pokemon_harness.control.session import RunControl, request_stop
+from pokemon_harness.control.registry import active_sessions
 from pokemon_harness.demo import DemoAgent, create_images
 from pokemon_harness.emulator.interface import ReplayEmulator
 from pokemon_harness.memory.database import Memory
@@ -20,6 +21,9 @@ class SessionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        environment = patch.dict("os.environ", {"POKEMON_HARNESS_SESSION_DIR": str(self.root / "registry")})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.config_path = self.root / "config.json"
         write_json(self.config_path, {
             "run_dir": "old-run", "objective": "Test goal", "rules": ["Test rule"],
@@ -37,7 +41,7 @@ class SessionTests(unittest.TestCase):
 
         class PendingAgent:
             def decide(self, messages):
-                (directory / ".stop").touch()
+                request_stop(directory)
                 release.wait(5)
                 return DemoAgent().decide(messages)
 
@@ -146,3 +150,22 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(main(["run", "--config", str(self.config_path),
                                "--run-dir", str(directory)]), 1)
         self.assertEqual((directory / "memory.sqlite").read_bytes(), b"keep me")
+
+    def test_failed_export_still_closes_emulator_and_unregisters_session(self):
+        directory = Path(self.config["run_dir"])
+        control = RunControl(directory, hotkey=False)
+        emulator = ReplayEmulator(self.images)
+
+        def failing_export(path, value):
+            if Path(path).name == "memory-export.json":
+                raise OSError("Export failed")
+            write_json(path, value)
+
+        with patch("pokemon_harness.runner.write_json", side_effect=failing_export), \
+                patch.object(emulator, "close") as close:
+            with self.assertRaisesRegex(OSError, "Export failed"):
+                run(self.config, emulator, DemoAgent(), turns=1, control=control)
+        close.assert_called_once()
+        self.assertEqual(active_sessions(), [])
+        with RunLock(directory / ".lock"):
+            pass

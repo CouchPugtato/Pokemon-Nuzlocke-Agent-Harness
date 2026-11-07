@@ -33,16 +33,20 @@ def run(config, emulator, agent, turns=20, control=None):
                 if control is None:
                     raise
                 memory.note("user_stop", {"message": "Harness stopped; emulator continues running"})
-                print("Harness stopped. Memory saved; emulator keeps running. Use pokemon-harness resume.")
+                print("Stopping harness; saving memory and releasing inputs. Emulator keeps running.")
                 return {"reason": "user_stop"}
         finally:
-            if control:
-                control.close()
             try:
                 emulator.close()
             finally:
-                write_json(run_dir / "memory-export.json", memory.export())
-                memory.close()
+                try:
+                    try:
+                        write_json(run_dir / "memory-export.json", memory.export())
+                    finally:
+                        memory.close()
+                finally:
+                    if control:
+                        control.close()
 
 
 def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None):
