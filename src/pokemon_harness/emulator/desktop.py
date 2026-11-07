@@ -9,8 +9,10 @@ import io
 import os
 import time
 from ctypes import wintypes
+from contextlib import ExitStack
 
 from .interface import Capture
+from ..control.ownership import EmulatorOwnership, WindowsTarget
 
 
 class WindowsDesktopEmulator:
@@ -40,6 +42,14 @@ class WindowsDesktopEmulator:
         for binding in self.bindings.values():
             self._combo(binding)
         self.hwnd = self._find_window(config.get("window_title", self.default_window_title))
+        self._resources = ExitStack()
+        try:
+            self.target = self._resources.enter_context(WindowsTarget(self.user32, self.hwnd))
+            self.ownership = self._resources.enter_context(EmulatorOwnership(self.target.identity))
+            self.target.check()
+        except BaseException:
+            self._resources.close()
+            raise
 
     def _configure_api(self):
         u = self.user32
@@ -132,6 +142,8 @@ class WindowsDesktopEmulator:
         return matches[0]
 
     def _check_focus(self):
+        self.ownership.check()
+        self.target.check()
         if not self.user32.IsWindow(self.hwnd) or self.user32.IsIconic(self.hwnd):
             raise RuntimeError(f"{self.display_name} window is closed or minimized")
         if self.user32.GetForegroundWindow() != self.hwnd:
@@ -140,6 +152,8 @@ class WindowsDesktopEmulator:
             raise RuntimeError("Close the emulator's settings dialog before running controller input")
 
     def _focus(self):
+        self.ownership.check()
+        self.target.check()
         if self.user32.GetForegroundWindow() != self.hwnd:
             self.user32.SetForegroundWindow(self.hwnd)
             time.sleep(0.15)
@@ -268,4 +282,9 @@ class WindowsDesktopEmulator:
                 "verification": "Input submitted; game response requires screenshot inspection"}
 
     def close(self):
-        self._release()
+        try:
+            self._release()
+        finally:
+            resources = getattr(self, "_resources", None)
+            if resources is not None:
+                resources.close()

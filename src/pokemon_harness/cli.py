@@ -3,6 +3,7 @@ import json
 import sys
 import uuid
 from datetime import datetime
+from contextlib import closing
 from pathlib import Path
 
 from .agent.lmstudio import LMStudio
@@ -77,14 +78,16 @@ def play_run(args):
     if args.thinking is not None:
         config["model"]["thinking"] = args.thinking == "on"
     agent = LMStudio(config["model"])
-    agent.prepare()
-    thinking = ("on" if config["model"]["thinking"] else "off") if "thinking" in config["model"] else "model default"
-    print(f"Generation: max_tokens={config['model'].get('max_tokens', 32768)}, thinking={thinking}", flush=True)
-    emulator = emulator_for(config, config_path)
-    print(f"Run: {directory}\nObjective: {config['objective']}", flush=True)
-    print("Stop: F8 (all local harnesses), Ctrl+C, or pokemon-harness stop in another terminal. "
-          "Emulator keeps running.", flush=True)
-    result = run(config, emulator, agent, args.turns, control=RunControl(directory))
+    # Desktop construction acquires ownership without focusing or sending input.
+    # Hold it before model loading and release it even if startup/run locking fails.
+    with closing(emulator_for(config, config_path)) as emulator:
+        agent.prepare()
+        thinking = ("on" if config["model"]["thinking"] else "off") if "thinking" in config["model"] else "model default"
+        print(f"Generation: max_tokens={config['model'].get('max_tokens', 32768)}, thinking={thinking}", flush=True)
+        print(f"Run: {directory}\nObjective: {config['objective']}", flush=True)
+        print("Stop: F8 (all local harnesses), Ctrl+C, or pokemon-harness stop in another terminal. "
+              "Emulator keeps running.", flush=True)
+        result = run(config, emulator, agent, args.turns, control=RunControl(directory))
     if result.get("reason") == "user_stop":
         print("Harness stopped. Memory saved; inputs released. Use pokemon-harness resume.")
     print(json.dumps(result))
@@ -170,8 +173,8 @@ def main(argv=None):
         else:
             config = load_config(args.config)
             if args.command == "input-test":
-                emulator = emulator_for(config, args.config)
-                input_test(config, emulator, args.button, args.hold_frames, args.settle_frames)
+                with closing(emulator_for(config, args.config)) as emulator:
+                    input_test(config, emulator, args.button, args.hold_frames, args.settle_frames)
             else:
                 emulator = emulator_for(config, args.config)
                 try:
