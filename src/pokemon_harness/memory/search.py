@@ -1,4 +1,4 @@
-"""Explicit, read-only lexical search over the run's durable facts and ledger."""
+"""explicit read only search over durable memory and contradictions"""
 
 from jsonschema import Draft202012Validator
 
@@ -6,7 +6,7 @@ from ..agent.schemas import MEMORY_SEARCH_SCHEMA
 from .retrieval import words
 
 
-def search_records(facts, events, request, observation_id):
+def search_records(facts, events, request, observation_id, contradictions=()):
     Draft202012Validator(MEMORY_SEARCH_SCHEMA).validate(request)
     if request["category"] and request["scope"] != "facts":
         raise ValueError("A memory category filter requires scope=facts")
@@ -28,6 +28,8 @@ def search_records(facts, events, request, observation_id):
     if request["scope"] in {"events", "all"}:
         candidates.extend(dict(event, record_type="event", corrected_by=corrections.get(event["key"], []))
                           for event in events)
+    if request["scope"] in {"contradictions", "all"}:
+        candidates.extend(dict(record, record_type="contradiction") for record in contradictions)
 
     matches = []
     for record in candidates:
@@ -35,11 +37,12 @@ def search_records(facts, events, request, observation_id):
         if location and location not in area.casefold():
             continue
         searchable = " ".join(str(record.get(key, "")) for key in
-                              ("key", "claim", "category", "location", "type", "subject", "area", "details"))
+                              ("key", "claim", "category", "location", "type", "subject", "area", "details", "reason",
+                               "fact_ids", "event_keys", "replacement_facts", "correction_event_keys"))
         overlap = len(terms & words(searchable))
         if terms and not overlap:
             continue
-        # Exact keys are useful when the model knows a previous record's identity.
+        # exact keys when the earlier record identity is known
         exact_key = bool(request["query"].strip()) and record["key"].casefold() == request["query"].strip().casefold()
         record["age_observations"] = observation_id - record["evidence_observation_id"]
         rank = (exact_key, overlap, record["evidence_observation_id"], record.get("fact_id", record.get("event_id", 0)))

@@ -35,15 +35,18 @@ class Escalations:
         return values
 
     def open(self, key, reason, evidence_ids=(), details=None):
+        with self.connection:
+            return self.open_in_transaction(key, reason, evidence_ids, details)
+
+    def open_in_transaction(self, key, reason, evidence_ids=(), details=None):
         if not isinstance(key, str) or not key.strip() or len(key) > 240:
             raise ValueError("Case key must contain between 1 and 240 characters")
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
             raise ValueError("Case reason must contain between 1 and 2000 characters")
         evidence = self._evidence(evidence_ids)
-        with self.connection:
-            self.connection.execute(
-                "INSERT OR IGNORE INTO escalation_cases(case_key,reason,details,evidence_ids,created_at) "
-                "VALUES(?,?,?,?,?)", (key, reason, json.dumps(details or {}), json.dumps(evidence), timestamp()))
+        self.connection.execute(
+            "INSERT OR IGNORE INTO escalation_cases(case_key,reason,details,evidence_ids,created_at) "
+            "VALUES(?,?,?,?,?)", (key, reason, json.dumps(details or {}), json.dumps(evidence), timestamp()))
         return self.connection.execute("SELECT id FROM escalation_cases WHERE case_key=?", (key,)).fetchone()[0]
 
     def cases(self):

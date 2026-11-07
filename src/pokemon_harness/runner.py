@@ -249,7 +249,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "memory_search_results": [dict(bundle, results=[
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
                 for record in bundle["results"]]) for bundle in search_results],
-            "working_state": memory.working.current(),
+            "working_state": memory.working_context(),
+            "contradictions": memory.contradictions.context(),
             "progress": memory.monitor_progress(),
             "outcome_review": dict(memory.outcomes.context(), review_batches_remaining=review_budget - review_count),
             "recent_turns": recent_turn_context(recent), "recovery": recovered,

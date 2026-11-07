@@ -17,7 +17,7 @@ def obj(properties):
 
 MEMORY_SEARCH_SCHEMA = obj({
     "query": text(200),
-    "scope": {"type": "string", "enum": ["all", "facts", "events"]},
+    "scope": {"type": "string", "enum": ["all", "facts", "events", "contradictions"]},
     "category": {"type": "string", "enum": ["", *MEMORY_CATEGORIES]},
     "location": text(120),
     "include_history": {"type": "boolean"},
@@ -72,6 +72,33 @@ OUTCOME_REVIEW = obj({
     })},
 })
 
+FACT_REFERENCE = obj({
+    "category": {"type": "string", "enum": MEMORY_CATEGORIES},
+    "key": {**text(120), "minLength": 1},
+})
+FACT_IDS = {"type": "array", "maxItems": 8, "uniqueItems": True,
+            "items": {"type": "integer", "minimum": 1}}
+EVENT_KEYS = {"type": "array", "maxItems": 8, "uniqueItems": True,
+              "items": {**text(120), "minLength": 1}}
+MEMORY_DEPENDENCIES = obj({
+    "facts": {"type": "array", "maxItems": 12, "items": obj({
+        "fact": FACT_REFERENCE, "depends_on_fact_ids": FACT_IDS, "depends_on_event_keys": EVENT_KEYS,
+    })},
+    "working_state": {"anyOf": [{"type": "null"}, FACT_IDS]},
+    "working_state_events": {"anyOf": [{"type": "null"}, EVENT_KEYS]},
+})
+CONTRADICTION_UPDATE = obj({
+    "operation": {"type": "string", "enum": ["open", "resolve"]},
+    "key": {**text(120), "minLength": 1},
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "reason": {**text(), "minLength": 1},
+    "evidence_observation_ids": EVIDENCE_IDS,
+    "fact_ids": FACT_IDS,
+    "event_keys": EVENT_KEYS,
+    "replacement_facts": {"type": "array", "maxItems": 8, "items": FACT_REFERENCE},
+    "correction_event_keys": EVENT_KEYS,
+})
+
 
 DECISION_SCHEMA = obj({
     "observation_id": {"type": "integer", "minimum": 1},
@@ -92,6 +119,8 @@ DECISION_SCHEMA = obj({
     "memory_search": {"anyOf": [{"type": "null"}, MEMORY_SEARCH_SCHEMA]},
     "working_state_update": {"anyOf": [{"type": "null"}, WORKING_STATE_UPDATE]},
     "outcome_reviews": {"type": "array", "maxItems": 1, "items": OUTCOME_REVIEW},
+    "memory_dependencies": MEMORY_DEPENDENCIES,
+    "contradiction_updates": {"type": "array", "maxItems": 8, "items": CONTRADICTION_UPDATE},
     "strategy": {"anyOf": [{"type": "null"}, obj({
         "kind": {"type": "string", "enum": ["advance_dialogue", "inspect_menu", "move", "interact",
                                              "battle", "capture", "flee", "wait", "other"]},
@@ -140,18 +169,21 @@ def validate_decision(value, observation_id, max_frames=60, max_sequence_length=
     if action["kind"] not in {"press", "wait"} and value["recovery_plan"] is not None:
         raise ValueError("Only controller plans may propose a recovery test")
     search = value["memory_search"]
+    dependency_write = (value["memory_dependencies"]["facts"] or value["memory_dependencies"]["working_state"] is not None
+                        or value["memory_dependencies"]["working_state_events"] is not None)
     if (action["kind"] == "search_memory") != (search is not None):
         raise ValueError("Only search_memory actions must supply a memory_search request")
     if search is not None:
         if (value["memory_updates"] or value["events"] or value["working_state_update"] is not None
-                or value["outcome_reviews"]):
+                or value["outcome_reviews"] or value["contradiction_updates"] or dependency_write):
             raise ValueError("Memory searches are read-only; return empty memory_updates and events and null working_state_update")
         if search["category"] and search["scope"] != "facts":
             raise ValueError("A memory category filter requires scope=facts")
     if action["kind"] == "review_outcomes":
         if not value["outcome_reviews"]:
             raise ValueError("review_outcomes requires an outcome review")
-        if value["memory_updates"] or value["events"] or value["working_state_update"] is not None:
+        if (value["memory_updates"] or value["events"] or value["working_state_update"] is not None
+                or value["contradiction_updates"] or dependency_write):
             raise ValueError("review_outcomes only writes outcome reviews")
     for event in value["events"]:
         if (event["type"] == "correction") != bool(event["corrects_event_key"]):

@@ -74,7 +74,7 @@ class Progress:
             plan = self.outcomes.plan_context(turn[0])
             review = self.outcomes.latest(turn[0])
             progress = False
-            if review:
+            if review and plan["subgoal_memory_validity"] != "invalidated":
                 for step in review["steps"]:
                     if step["assessment"] != "progress_observed":
                         continue

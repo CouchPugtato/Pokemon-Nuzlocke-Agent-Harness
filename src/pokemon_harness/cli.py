@@ -171,6 +171,12 @@ def main(argv=None):
     progress.add_argument("--history", action="store_true")
     progress.add_argument("--limit", type=int, default=20)
     progress.add_argument("--offset", type=int, default=0)
+    conflicts = commands.add_parser("contradictions", help="Inspect disputed memories and history for a stopped run")
+    conflicts.add_argument("run_dir", nargs="?", type=Path)
+    conflicts.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    conflicts.add_argument("--history", action="store_true")
+    conflicts.add_argument("--limit", type=int, default=20)
+    conflicts.add_argument("--offset", type=int, default=0)
     cases = commands.add_parser("cases", help="Inspect durable review cases for the latest or specified run")
     cases.add_argument("run_dir", nargs="?", type=Path)
     cases.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -215,12 +221,14 @@ def main(argv=None):
             print(json.dumps(verify_backup(args.backup_dir), indent=2))
         elif args.command == "restore":
             print(json.dumps(restore_backup(args.backup_dir, args.run_dir, args.runs_dir), indent=2))
-        elif args.command in {"state", "outcomes", "progress"}:
+        elif args.command in {"state", "outcomes", "progress", "contradictions"}:
             directory = saved_run(args.run_dir, args.runs_dir)
             with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
-                store = {"state": memory.working, "outcomes": memory.outcomes, "progress": memory.progress}[args.command]
-                key = {"state": "working_state", "outcomes": "outcome_review", "progress": "progress"}[args.command]
-                value = (store.current() if args.command == "state" else
+                store = {"state": memory.working, "outcomes": memory.outcomes, "progress": memory.progress,
+                         "contradictions": memory.contradictions}[args.command]
+                key = {"state": "working_state", "outcomes": "outcome_review", "progress": "progress",
+                       "contradictions": "contradictions"}[args.command]
+                value = (memory.working_context() if args.command == "state" else
                          memory.monitor_progress() if args.command == "progress" else store.context())
                 result = {"run_dir": str(directory), key: value}
                 if args.history:

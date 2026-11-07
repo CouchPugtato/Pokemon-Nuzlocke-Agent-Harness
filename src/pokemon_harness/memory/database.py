@@ -7,6 +7,7 @@ from .escalations import Escalations
 from .working_state import WorkingState
 from .outcomes import Outcomes
 from .progress import Progress
+from .contradictions import Contradictions
 from ..control.loop_detection import image_features
 from ..telemetry.cleanup import cleanup_operations
 
@@ -60,6 +61,7 @@ class Memory:
         self.working = WorkingState(self.connection)
         self.outcomes = Outcomes(self.connection)
         self.progress = Progress(self.connection, self.outcomes)
+        self.contradictions = Contradictions(self.connection, self.escalations)
 
     def initialize(self, config):
         # keeping the objective and rules fixed across sessions
@@ -97,9 +99,11 @@ class Memory:
             if decision["action"]["kind"] in {"search_memory", "review_outcomes"}:
                 raise ValueError("Search and review actions cannot change working state or create controller plans")
             self.outcomes.apply(decision.get("outcome_reviews", []), observation_id)
-            progress = self.progress.refresh()
             if decision["action"]["kind"] in {"press", "wait"} and self.outcomes.pending_count():
                 raise ValueError("Review pending action outcomes before another controller plan")
+            dependencies = self.contradictions.dependencies(decision.get(
+                "memory_dependencies", {"facts": [], "working_state": None, "working_state_events": None}))
+            created = {}
             for event in decision["events"]:
                 existing = self.connection.execute("SELECT payload FROM events WHERE key=?", (event["key"],)).fetchone()
                 if existing:
@@ -113,16 +117,28 @@ class Memory:
                     "INSERT INTO events(key,payload,observation_id,created_at) VALUES(?,?,?,?)",
                     (event["key"], encode(event), observation_id, now()))
             for fact in decision["memory_updates"]:
-                self.connection.execute(
+                identity = (fact["category"], fact["key"])
+                if identity in created:
+                    raise ValueError("Write each fact key at most once per decision")
+                saved = self.connection.execute(
                     "INSERT INTO facts(category,key,payload,observation_id,created_at) VALUES(?,?,?,?,?)",
                     (fact["category"], fact["key"], encode(fact), observation_id, now()))
+                created[identity] = saved.lastrowid
+            self.contradictions.register_facts(created, dependencies["facts"], observation_id)
+            self.contradictions.apply(decision.get("contradiction_updates", []), observation_id)
+            self.contradictions.sync_corrections(decision["events"])
             cursor = self.connection.execute(
                 "INSERT INTO turns(observation_id,decision,status,created_at) VALUES(?,?,'planned',?)",
                 (observation_id, encode(decision), now()))
-            self.working.apply(decision.get("working_state_update"), observation_id, cursor.lastrowid)
+            previous = self.working.current()
+            update = decision.get("working_state_update")
+            self.working.apply(update, observation_id, cursor.lastrowid)
+            self.contradictions.register_working(self.working.current(), previous, update,
+                                                 dependencies["working_state"], dependencies["working_state_events"])
+            progress = self.progress.refresh()
             if decision["action"]["kind"] in {"press", "wait"}:
                 self.progress.reserve(cursor.lastrowid, decision, progress)
-                self.outcomes.intent(cursor.lastrowid, self.working.current())
+                self.outcomes.intent(cursor.lastrowid, self.working_context())
                 for index, action in enumerate([decision["action"], *decision.get("additional_actions", [])], 1):
                     self.connection.execute(
                         "INSERT INTO action_steps(turn_id,step_index,action,status,updated_at) VALUES(?,?,?,'planned',?)",
@@ -137,6 +153,9 @@ class Memory:
     def monitor_progress(self):
         with self.connection:
             return self.progress.refresh()
+
+    def working_context(self):
+        return self.contradictions.working_context(self.working.current())
 
     def _cancel_steps(self, turn_id, error):
         self.connection.execute(
@@ -184,6 +203,15 @@ class Memory:
             value["decision"] = json.loads(value["decision"])
             value["execution"] = execution.get(value["id"])
             value["outcome_review"] = self.outcomes.latest(value["id"])
+            value["contradiction_keys"] = [row[0] for row in self.connection.execute("""
+                SELECT DISTINCT i.key FROM facts f JOIN fact_invalidations i ON i.fact_id=f.id
+                WHERE f.observation_id=? AND NOT EXISTS(SELECT 1 FROM fact_revalidations v
+                    WHERE v.fact_id=i.fact_id AND v.key=i.key)
+                UNION SELECT i.key FROM working_revisions w JOIN working_invalidations i ON i.revision=w.revision
+                WHERE w.turn_id=?
+                UNION SELECT i.key FROM action_intents a JOIN working_invalidations i ON i.revision=a.working_revision
+                WHERE a.turn_id=?
+            """, (value["observation_id"], value["id"], value["id"]))]
             steps = self.connection.execute(
                 "SELECT * FROM action_steps WHERE turn_id=? ORDER BY step_index", (value["id"],)).fetchall()
             value["steps"] = [dict(step, action=json.loads(step["action"]),
@@ -200,20 +228,21 @@ class Memory:
             WHERE ? OR f.id=latest.id
             ORDER BY f.id DESC
         """, (include_history,)).fetchall()
-        return [dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
+        return self.contradictions.annotate_facts([dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
                      recorded_at=row["created_at"], fact_id=row["id"],
-                     is_latest=row["id"] == row["latest_id"]) for row in rows]
+                     is_latest=row["id"] == row["latest_id"]) for row in rows])
 
     def events(self):
         rows = self.connection.execute("SELECT * FROM events ORDER BY id").fetchall()
-        return [dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
-                     recorded_at=row["created_at"], event_id=row["id"]) for row in rows]
+        return self.contradictions.annotate_events([dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
+                     recorded_at=row["created_at"], event_id=row["id"]) for row in rows])
 
     def search(self, request, observation_id):
         from .search import search_records
 
         return search_records(self.facts(include_history=request["include_history"]),
-                              self.events(), request, observation_id)
+                              self.events(), request, observation_id,
+                              self.contradictions.records(request["include_history"]))
 
     def hashes(self, limit=6):
         return [row[0] for row in self.connection.execute(
@@ -222,9 +251,11 @@ class Memory:
     def export(self):
         return {"facts": self.facts(), "events": self.events(), "recent_turns": self.recent_turns(20),
                 "cases": self.escalations.cases(), "validity": self.escalations.validity(),
-                "working_state": self.working.current(), "outcome_review": self.outcomes.context(),
+                "working_state": self.working_context(), "outcome_review": self.outcomes.context(),
                 "recent_outcome_reviews": self.outcomes.history(),
-                "progress": self.monitor_progress(), "recent_progress_events": self.progress.history()}
+                "progress": self.monitor_progress(), "recent_progress_events": self.progress.history(),
+                "contradictions": self.contradictions.context(),
+                "recent_contradiction_revisions": self.contradictions.records(True, 20)}
 
     def close(self):
         self.connection.close()

@@ -21,15 +21,21 @@ def recent_turn_context(turns):
                 item["error"] = step["error"][:200]
             steps.append(item)
         review = turn.get("outcome_review")
+        conflicts = turn.get("contradiction_keys", [])
         if review:
             review = {"turn_id": review["turn_id"], "revision": review["revision"],
                       "reviewed_observation_id": review["reviewed_observation_id"], "steps": [
                           {**{key: step[key] for key in ("step_index", "before_observation_id",
                                                         "after_observation_id", "assessment")},
                            "explanation_excerpt": step["explanation"][:200]} for step in review["steps"]]}
+            if conflicts:
+                review["steps"] = []
+                review["memory_validity"] = "invalidated"
         result.append({
             "id": turn["id"], "observation_id": turn["observation_id"], "status": turn["status"],
-            "decision": {key: decision[key] for key in ("scene", "location", "observation")},
+            "decision": ({"scene": "unknown", "location": "", "observation": "Historical interpretation withheld due to disputed source memories"}
+                         if conflicts else {key: decision[key] for key in ("scene", "location", "observation")}),
+            "contradiction_keys": conflicts,
             "action_kind": decision["action"]["kind"], "steps": steps,
             "outcome_review": review,
         })
@@ -38,7 +44,8 @@ def recent_turn_context(turns):
 
 def retrieve(facts, query, observation_id, limit=24):
     terms = words(query)
-    active = [fact for fact in facts if fact["status"] != "resolved"]
+    active = [fact for fact in facts if fact["status"] != "resolved"
+              and fact.get("memory_validity") not in {"disputed", "invalidated"}]
 
     def rank(fact):
         match = len(terms & words(fact["location"] + " " + fact["claim"] + " " + fact["key"]))

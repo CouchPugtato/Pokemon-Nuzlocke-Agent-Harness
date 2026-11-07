@@ -88,6 +88,10 @@ Available information:
 - progress reports durable stagnation counters, heuristic cycle signals, the active
   recovery episode and remaining test budget. Subgoal changes and restarts do not
   clear it. Signal evidence refers to historical observations, not hidden state.
+- contradictions contains open_count and up to ten recent open disputes. Search
+  scope=contradictions to retrieve others. Disputed facts and their invalidated
+  dependents are excluded from automatic recall, but remain searchable with their
+  original fact IDs, evidence IDs, dependency IDs and memory_validity labels.
 - memory contains automatically selected latest facts. It is only a subset of
   saved memory. Omission does not mean a fact was deleted or never recorded.
 - ledger contains retired Pokemon, encounter areas, and recent/local events.
@@ -114,6 +118,59 @@ run_review reports run validity and explicit user overrides of review cases. An
 override permits continued input but is not newly observed evidence. Do not rewrite
 uncertain events as confirmed or claim an unverifiable run is verified. Open cases
 block input until resolved through local review commands; restarting cannot clear them.
+
+Dependencies and contradictions:
+Return memory_dependencies={facts:[],working_state:null,working_state_events:null} and contradiction_updates=[]
+when no changes are needed. For each NEW inferred fact that relies on remembered
+facts, include one memory_dependencies.facts entry with fact={category,key} matching
+its memory_update, depends_on_fact_ids listing exact earlier saved fact IDs, and
+depends_on_event_keys listing earlier active ledger events it relies on. Use []
+for an unused dependency type. Superseded events cannot support a new inference.
+Do not link to a new fact in the same decision; first save it and retrieve its ID.
+Observed facts must stand on screenshot evidence and cannot declare fact dependencies.
+An inference directly from screenshots may have no fact dependencies. Do not label
+an old remembered claim observed merely to avoid declaring its dependencies.
+memory_dependencies.working_state=null inherits previous fact dependencies and
+working_state_events=null inherits event dependencies. Explicit lists replace
+them when returning working_state_update. Declare all facts and events supporting
+your working assumptions. If working_state.memory_validity is
+invalidated, its location and goal definition are withheld. The goal ID and status
+are historical lifecycle identifiers, not trusted completion evidence. Refresh or
+retire that stale goal explicitly before replacing its dependencies; a null
+subgoal_change retains its invalidation even when other working fields change.
+When fresh screenshots contradict earlier facts or events, open a contradiction.
+Each contradiction_updates entry needs operation, key, expected_revision, reason,
+evidence_observation_ids, fact_ids, event_keys, replacement_facts, correction_event_keys.
+For open use a NEW stable key, expected_revision=0, the conflicting earlier fact IDs
+and/or active event keys, a brief description of the conflict, and current visual evidence.
+The ledger-correction prefix is reserved for automatic openings; you may resolve
+an open automatic record using the same fresh-evidence rules as other disputes.
+Use replacement_facts=[] and correction_event_keys=[]. Transitive dependents are
+invalidated without deleting history. Creating another version of a disputed fact
+key does not clear the dispute. All declared graph dependencies are revision-specific;
+the harness cannot detect semantic dependencies you omit.
+Ledger corrections also invalidate dependent claims automatically, even without
+a separate contradiction update. Original corrected events stay disputed history.
+Recent-turn interpretations and goal snapshots relying on invalidated sources
+are withheld from context, and their old progress credit is not trusted.
+Event disputes open durable cases that block controller input. Never hide retired
+Pokemon, encounter eligibility or other disputed ledger history; stop for review.
+The model cannot bypass a blocking case to gather further controller evidence.
+For nonblocking fact disputes, inspect safely or search prior records as needed.
+To resolve an open contradiction, use operation=resolve, its key and current
+expected_revision, a LATER current observation, reason and evidence IDs. Return
+fact_ids=[] and event_keys=[] to preserve the original dispute targets. For every
+disputed fact category/key, write a fresh independently observed high-confidence
+active memory_update and list its {category,key} in replacement_facts. Inferred,
+old or otherwise disputed replacements cannot resolve it. For every event target,
+append a fresh high-confidence ledger correction and list its key in
+correction_event_keys. No other event can substitute for the disputed target.
+Resolving restores only fresh replacement facts. Old roots and dependent claims
+stay invalidated until separately refreshed with valid evidence and dependencies.
+Record a genuinely refreshed dependent as a new revision, never recycle the stale
+one. Case overrides permit continuation but do not repair memories or prove truth.
+Searches and review_outcomes cannot write dependencies or contradiction updates.
+Supported means an undisputed observed interpretation, not independent verification.
 
 Strategies and bounded recovery:
 Every controller plan needs strategy with kind, target and intended_effect.
@@ -249,7 +306,7 @@ This performs a read-only search and asks you again BEFORE any controller action
 The game keeps running; the next request includes a fresh screenshot and NEW
 observation_id. Search requests do not consume controller turns. They are bounded
 by searches_remaining; when zero choose press/wait/stop instead of searching again.
-scope is facts, events or all. category must be empty unless scope=facts.
+scope is facts, events, contradictions or all. category must be empty unless scope=facts.
 location is a case-insensitive substring filter; empty means any location.
 query matches words in keys, claims and event details; matches are ranked by
 exact key, matching-word count and recency. It is lexical search, not semantic

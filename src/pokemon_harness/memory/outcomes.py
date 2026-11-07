@@ -74,10 +74,17 @@ class Outcomes:
             if row["observation_id"] is not None:
                 before = row["observation_id"]
         latest = self.latest(turn_id)
+        conflicts = [row[0] for row in self.connection.execute(
+            "SELECT key FROM working_invalidations WHERE revision=?", (intent["working_revision"],))] if intent else []
+        subgoal = json.loads(intent["subgoal"]) if intent else None
+        if conflicts and subgoal:
+            subgoal = {"id": subgoal["id"], "status": subgoal["status"], "definition": None}
         return {"turn_id": turn_id, "input_status": turn["status"],
                 "expected_revision": latest["revision"] if latest else 0,
                 "expected_result_prediction": decision.get("expected_result", ""),
-                "subgoal_at_input": json.loads(intent["subgoal"]) if intent else None,
+                "subgoal_at_input": subgoal,
+                "subgoal_memory_validity": "invalidated" if conflicts else "supported",
+                "contradiction_keys": conflicts,
                 "working_revision_at_input": intent["working_revision"] if intent else None,
                 "steps": steps}
 
