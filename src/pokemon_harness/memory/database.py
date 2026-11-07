@@ -249,8 +249,9 @@ class Memory:
         row = self.connection.execute("SELECT * FROM observations ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
 
-    def recent_turns(self, limit=6):
-        rows = self.connection.execute("SELECT * FROM turns ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    def recent_turns(self, limit=6, turn_id=None):
+        rows = self.connection.execute("SELECT * FROM turns ORDER BY id DESC LIMIT ?", (limit,)).fetchall() \
+            if turn_id is None else self.connection.execute("SELECT * FROM turns WHERE id=?", (turn_id,)).fetchall()
         reports = self.connection.execute(
             "SELECT payload FROM notes WHERE kind='action_result' ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         execution = {value["turn_id"]: value.get("execution")
@@ -297,10 +298,29 @@ class Memory:
 
     def search(self, request, observation_id):
         from .search import search_records
+        from .retrieval import recent_turn_context
 
-        return search_records(self.facts(include_history=request["include_history"]),
-                              self.events(), request, observation_id,
-                              self.contradictions.records(request["include_history"]))
+        turns = []
+        if request["scope"] in {"turns", "all"}:
+            turns = [dict(row, key=f"turn:{row['turn_id']}", record_type="turn") for row in self.connection.execute("""
+                SELECT id AS turn_id, observation_id AS evidence_observation_id, created_at AS recorded_at,
+                    status, COALESCE(json_extract(decision,'$.location'),'') AS location,
+                    json_extract(decision,'$.strategy.kind') AS strategy_kind,
+                    json_extract(decision,'$.strategy.target') AS strategy_target
+                FROM turns WHERE observation_id<=? ORDER BY id DESC
+            """, (observation_id,))]
+        result = search_records(self.facts(include_history=request["include_history"]),
+                                self.events(), request, observation_id,
+                                self.contradictions.records(request["include_history"]), turns)
+        for record in result["results"]:
+            if record["record_type"] == "turn":
+                detail = recent_turn_context(self.recent_turns(1, record["turn_id"]))[0]
+                record["detail"] = detail
+                record["source_review_id"] = self.connection.execute(
+                    "SELECT MAX(id) FROM outcome_reviews WHERE target_turn_id=?", (record["turn_id"],)).fetchone()[0]
+                if detail["contradiction_keys"]:
+                    record.update(strategy_kind=None, strategy_target=None, location="", memory_validity="invalidated")
+        return result
 
     def hashes(self, limit=6):
         return [row[0] for row in self.connection.execute(

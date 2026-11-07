@@ -108,7 +108,7 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
         omissions[name] = omissions.get(name, 0) + count
 
     def trim():
-        if selected.get("recent_turns"):
+        if len(selected.get("recent_turns", [])) > 1:
             selected["recent_turns"].pop(0)
             omitted("recent_turns")
         elif selected.get("conversation", {}).get("recent"):
@@ -117,6 +117,9 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
         elif selected.get("conversation", {}).get("continuity", {}).get("reviews"):
             selected["conversation"]["continuity"]["reviews"].pop(0)
             omitted("continuity_reviews")
+        elif selected.get("recent_turns"):
+            selected["recent_turns"].pop(0)
+            omitted("recent_turns")
         elif any(event.get("type") == "progress" for event in selected.get("ledger", {}).get("recent_or_local_events", [])):
             entries = selected["ledger"]["recent_or_local_events"]
             index = next(index for index, event in enumerate(entries) if event.get("type") == "progress")
@@ -132,6 +135,10 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
             index = next(index for index, frame in enumerate(evidence) if frame.get("purpose") == "loop")
             evidence.pop(index)
             omitted("loop_images")
+        elif any(frame.get("purpose") == "archive" for frame in evidence):
+            index = next(index for index, frame in enumerate(evidence) if frame.get("purpose") == "archive")
+            evidence.pop(index)
+            omitted("archive_images")
         elif len(evidence) > 2:
             evidence.pop(0)
             omitted("outcome_images")
@@ -143,6 +150,7 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
         visible = {selected["observation_id"], *(frame["observation_id"] for frame in evidence),
                    *(frame["observation_id"] for frame in sequence)}
         selected["outcome_visual_evidence_ids"] = sorted(visible)
+        selected["archive_visual_evidence_ids"] = sorted(visible & set(selected.get("requested_archive_observation_ids", [])))
         selected["request_budget"]["omitted"] = dict(omissions)
         request = messages(selected, current_image, previous_image, sequence, evidence)
         try:

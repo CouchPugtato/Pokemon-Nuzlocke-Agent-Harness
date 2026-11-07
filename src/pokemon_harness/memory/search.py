@@ -6,7 +6,7 @@ from ..agent.schemas import MEMORY_SEARCH_SCHEMA
 from .retrieval import words
 
 
-def search_records(facts, events, request, observation_id, contradictions=()):
+def search_records(facts, events, request, observation_id, contradictions=(), turns=()):
     Draft202012Validator(MEMORY_SEARCH_SCHEMA).validate(request)
     if request["category"] and request["scope"] != "facts":
         raise ValueError("A memory category filter requires scope=facts")
@@ -30,6 +30,8 @@ def search_records(facts, events, request, observation_id, contradictions=()):
                           for event in events)
     if request["scope"] in {"contradictions", "all"}:
         candidates.extend(dict(record, record_type="contradiction") for record in contradictions)
+    if request["scope"] in {"turns", "all"}:
+        candidates.extend(turns)
 
     matches = []
     for record in candidates:
@@ -38,7 +40,7 @@ def search_records(facts, events, request, observation_id, contradictions=()):
             continue
         searchable = " ".join(str(record.get(key, "")) for key in
                               ("key", "claim", "category", "location", "type", "subject", "area", "details", "reason",
-                               "fact_ids", "event_keys", "replacement_facts", "correction_event_keys"))
+                               "fact_ids", "event_keys", "replacement_facts", "correction_event_keys", "strategy_kind", "strategy_target"))
         overlap = len(terms & words(searchable))
         if terms and not overlap:
             continue

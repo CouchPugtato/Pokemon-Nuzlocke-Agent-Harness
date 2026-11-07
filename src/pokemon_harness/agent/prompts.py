@@ -330,7 +330,11 @@ This performs a read-only search and asks you again BEFORE any controller action
 The game keeps running; the next request includes a fresh screenshot and NEW
 observation_id. Search requests do not consume controller turns. They are bounded
 by searches_remaining; when zero choose press/wait/stop instead of searching again.
-scope is facts, events, contradictions or all. category must be empty unless scope=facts.
+scope is facts, events, contradictions, turns or all. category must be empty unless scope=facts.
+Turn records include historical interpretations, actual input steps and the latest
+outcome review. Search an exact key such as turn:28, a strategy target or kind.
+Past rationales and expected results are not returned. Disputed interpretations
+are withheld; input completion still does not prove a game result.
 location is a case-insensitive substring filter; empty means any location.
 query matches words in keys, claims and event details; matches are ranked by
 exact key, matching-word count and recency. It is lexical search, not semantic
@@ -342,7 +346,20 @@ limit is 1..10. To fetch another page repeat the query/filters and increase offs
 Results include total_matches and has_more. fact.is_latest distinguishes old
 revisions; event.corrected_by lists correction keys, which can be searched next.
 Results carry original evidence IDs and updated ages; a retrieved record is not
-a fresh observation. Historical screenshot bytes are not returned by search.
+a fresh observation. To inspect archived screenshots, optionally add observation_ids
+to memory_search, an array of one to four distinct positive observation IDs from THIS
+run. Omit it or use [] for text only. The cumulative retained image limit and byte
+limit per decision are listed in memory_available.archive_retrieval. Search rounds
+share searches_remaining. Never provide paths, URLs or IDs from a different run.
+Use evidence_observation_id from records, step before/after IDs, or continuity IDs
+to choose screenshots. Retrieval validates their stored hashes and local paths.
+archive_images in each search result reports verified, missing or byte_limit reads.
+Only archive_visual_evidence_ids identifies requested archive pixels supplied in
+THIS model request; verified reads may still be omitted by the context budget.
+Current observation and archive evidence are labeled separately. Historical images
+remain historical even when retrieved now. They cannot establish current HP, party,
+position or freshness. Do not copy them into newly observed memory updates or events;
+inspect the current game to confirm changing facts. Missing images are not evidence.
 Example search request (response fragments; still supply every schema field):
 "action":{"kind":"search_memory","buttons":[],"hold_frames":1,"settle_frames":0},
 "additional_actions":[],
@@ -355,7 +372,7 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
     content = [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}]
     shown = {current_image: "current observation", previous_image: "previous observation"}
     for frame in outcome_images or []:
-        purpose = "Loop" if frame.get("purpose") == "loop" else "Outcome"
+        purpose = {"loop": "Loop", "archive": "Archived historical"}.get(frame.get("purpose"), "Outcome")
         label = f"{purpose} evidence observation {frame['observation_id']}"
         reference = shown.get(frame["image"])
         content.append({"type": "text", "text": label + (f" (same image as {reference}):" if reference else ":")})

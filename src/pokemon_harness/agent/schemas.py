@@ -17,13 +17,16 @@ def obj(properties):
 
 MEMORY_SEARCH_SCHEMA = obj({
     "query": text(200),
-    "scope": {"type": "string", "enum": ["all", "facts", "events", "contradictions"]},
+    "scope": {"type": "string", "enum": ["all", "facts", "events", "contradictions", "turns"]},
     "category": {"type": "string", "enum": ["", *MEMORY_CATEGORIES]},
     "location": text(120),
     "include_history": {"type": "boolean"},
     "offset": {"type": "integer", "minimum": 0, "maximum": 1000000},
     "limit": {"type": "integer", "minimum": 1, "maximum": 10},
 })
+MEMORY_SEARCH_SCHEMA["properties"]["observation_ids"] = {
+    "type": "array", "maxItems": 4, "uniqueItems": True,
+    "items": {"type": "integer", "minimum": 1}}
 
 EVIDENCE_IDS = {"type": "array", "items": {"type": "integer", "minimum": 1},
                 "uniqueItems": True, "maxItems": 8}

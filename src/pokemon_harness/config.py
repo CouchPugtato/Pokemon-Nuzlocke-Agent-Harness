@@ -6,6 +6,7 @@ from .telemetry.storage import storage_settings
 from .memory.progress import progress_settings
 from .agent.context_budget import budget_settings
 from .memory.conversation import compaction_settings
+from .memory.archive import archive_settings
 
 
 def load_config(path):
@@ -28,6 +29,7 @@ def load_config(path):
     value["storage"] = storage_settings(value)
     value["progress"] = progress_settings(value)
     value["compaction"] = compaction_settings(value)
+    value["archive_retrieval"] = archive_settings(value)
     value.setdefault("max_action_frames", 60)
     value.setdefault("max_sequence_length", 5)
     value.setdefault("sequence_delay_ms", 250)

@@ -334,7 +334,8 @@ class Conversation:
                        "proposal_only": True} if isinstance(value, dict) else {"invalid_response": True}
         elif kind == "search_completed":
             payload = {"request": payload["request"], "total_matches": payload["total_matches"],
-                       "result_ids": [{key: record[key] for key in ("record_type", "fact_id", "event_id", "contradiction_revision_id")
+                       "archive_images": payload.get("archive_images", []),
+                       "result_ids": [{key: record[key] for key in ("record_type", "fact_id", "event_id", "contradiction_revision_id", "turn_id", "source_review_id")
                                       if key in record} for record in payload["results"]]}
         elif kind == "input_step":
             execution = payload.get("execution") or {}

@@ -6,6 +6,7 @@ import json
 from .agent.lmstudio import InvalidModelResponse, LMStudio
 from .agent.context_budget import ContextBudgetError, calibration_key, fit_request, validate_visual_reviews
 from .memory.conversation import compaction_settings
+from .memory.archive import archive_settings, retrieve_images
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
 from .control.session import StopRequested
@@ -224,6 +225,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
     search_count = 0
     review_count = 0
     search_results = []
+    archive_images = []
+    archive_policy = archive_settings(config)
     settings = compaction_settings(config)
     compacted = False
     pressure = False
@@ -271,6 +274,9 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                 "latest_fact_count": len(facts), "event_count": len(events),
                 "categories": MEMORY_CATEGORIES, "history_available": True,
                 "searches_remaining": budget - search_count, "max_results_per_search": 10,
+                "search_scopes": ["all", "facts", "events", "contradictions", "turns"],
+                "archive_retrieval": dict(archive_policy, retained_observation_ids=[
+                    frame["observation_id"] for frame in archive_images]),
             },
             "memory_search_results": [dict(bundle, results=[
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
@@ -296,6 +302,9 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
             outcome_images = _outcome_images(memory, run_dir, context["outcome_review"]["next_plan"],
                                              context["progress"]["representative_observation_ids"])
+            existing_ids = {frame["observation_id"] for frame in outcome_images}
+            outcome_images.extend(frame for frame in archive_images if frame["observation_id"] not in existing_ids)
+            context["requested_archive_observation_ids"] = [frame["observation_id"] for frame in archive_images]
             factor = memory.budgets.factor(key)
             loaded_context = agent.loaded_context_length if isinstance(agent, LMStudio) else None
             context, request, report = fit_request(context, model_settings, current_image, previous_image,
@@ -340,6 +349,9 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                 raise ValueError("Memory search budget exhausted; no controller input was sent for this decision")
             search_count += 1
             result = memory.search(decision["memory_search"], observation_id)
+            archive_images, image_records = retrieve_images(memory, run_dir,
+                decision["memory_search"].get("observation_ids", []), observation_id, archive_policy, archive_images)
+            result["archive_images"] = image_records
             memory.record_search(request_id, observation_id, result)
             write_json(prefix.with_suffix(".search.json"), result)
             search_results.append(result)
