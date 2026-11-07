@@ -49,6 +49,7 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
         recovered = memory.recover()
         if recovered:
             memory.note("recovery", recovered)
+        memory.monitor_progress()
         review = memory.escalations.review(memory.events())
         if review["blocked_cases"] or review["validity"] == "invalid":
             print("Run needs review before input. Use pokemon-harness cases.")
@@ -91,6 +92,11 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
     previous = memory.previous_observation()
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
     current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
+    memory.monitor_progress()
+    review = memory.escalations.review(memory.events())
+    if review["blocked_cases"]:
+        return {"completed_actions": 0, "reason": "review_required",
+                "case_ids": [case["id"] for case in review["blocked_cases"]]}
     if control:
         control.set_guard(getattr(emulator, "check_control", None))
         control.check()
@@ -131,6 +137,7 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
         memory.status(turn_id, "executing")
         actions = [decision["action"], *decision["additional_actions"]]
         sequence_images = []
+        interrupted = False
         try:
             for index, action in enumerate(actions, 1):
                 if control:
@@ -161,7 +168,13 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
                       f"-> observation {result_id} (game response not yet verified)", flush=True)
                 previous_image, current_image, observation_id = current_image, result_image, result_id
                 timing = result_timing
-            memory.status(turn_id, "completed")
+                progress = memory.monitor_progress()
+                if progress["requires_recovery"] and index < len(actions):
+                    memory.status(turn_id, "stopped", "Sequence interrupted for progress reassessment")
+                    interrupted = True
+                    break
+            if not interrupted:
+                memory.status(turn_id, "completed")
             if intervention:
                 memory.note("resume_after_handoff", {"handoff": intervention,
                                                      "fresh_observation_id": decision["observation_id"]})
@@ -190,7 +203,7 @@ def _capture(memory, run_dir, emulator, storage=None):
     if storage:
         storage.check(len(capture.image))
     path, digest = save_capture(run_dir, capture)
-    observation_id = memory.observe(path, digest, capture.timing)
+    observation_id = memory.observe(path, digest, capture.timing, capture.image)
     return capture.image, observation_id, capture.timing
 
 
@@ -237,6 +250,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
                 for record in bundle["results"]]) for bundle in search_results],
             "working_state": memory.working.current(),
+            "progress": memory.monitor_progress(),
             "outcome_review": dict(memory.outcomes.context(), review_batches_remaining=review_budget - review_count),
             "recent_turns": recent_turn_context(recent), "recovery": recovered,
             "warning": loop_warning(memory.hashes()),
@@ -249,7 +263,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
         try:
             print(f"Observation {observation_id}: requesting model decision "
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
-            outcome_images = _outcome_images(memory, run_dir, context["outcome_review"]["next_plan"])
+            outcome_images = _outcome_images(memory, run_dir, context["outcome_review"]["next_plan"],
+                                             context["progress"]["representative_observation_ids"])
             request = messages(context, current_image, previous_image, sequence_images, outcome_images)
             decision, trace = control.decide(agent, request) if control else agent.decide(request)
             if storage:
@@ -292,15 +307,14 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             raise
 
 
-def _outcome_images(memory, run_dir, plan):
-    if plan is None:
-        return []
-    ids = {step[key] for step in plan["steps"]
+def _outcome_images(memory, run_dir, plan, loop_ids=()):
+    ids = {step[key] for step in (plan["steps"] if plan else [])
            if step["input_status"] in {"completed", "executing", "unknown"}
            for key in ("before_observation_id", "after_observation_id") if step[key] is not None}
     frames = []
-    for observation_id in sorted(ids):
+    for observation_id in sorted(ids | set(loop_ids)):
         row = memory.connection.execute(
             "SELECT image_path FROM observations WHERE id=?", (observation_id,)).fetchone()
-        frames.append({"observation_id": observation_id, "image": (run_dir / row[0]).read_bytes()})
+        frames.append({"observation_id": observation_id, "image": (run_dir / row[0]).read_bytes(),
+                       "purpose": "outcome" if observation_id in ids else "loop"})
     return frames

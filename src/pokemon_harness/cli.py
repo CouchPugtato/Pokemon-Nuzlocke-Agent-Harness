@@ -63,6 +63,8 @@ def play_run(args):
         StorageGuard(config).check()
         # checking durable cases before loading a model or opening the emulator
         with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+            memory.initialize(config)
+            memory.monitor_progress()
             review = memory.escalations.review(memory.events())
             if review["blocked_cases"] or review["validity"] == "invalid":
                 raise ValueError("Run needs review or is invalid. Use pokemon-harness cases and resolve-case")
@@ -163,6 +165,12 @@ def main(argv=None):
     outcomes.add_argument("--history", action="store_true")
     outcomes.add_argument("--limit", type=int, default=20)
     outcomes.add_argument("--offset", type=int, default=0)
+    progress = commands.add_parser("progress", help="Inspect progress and recovery history for a stopped run")
+    progress.add_argument("run_dir", nargs="?", type=Path)
+    progress.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    progress.add_argument("--history", action="store_true")
+    progress.add_argument("--limit", type=int, default=20)
+    progress.add_argument("--offset", type=int, default=0)
     cases = commands.add_parser("cases", help="Inspect durable review cases for the latest or specified run")
     cases.add_argument("run_dir", nargs="?", type=Path)
     cases.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -207,12 +215,14 @@ def main(argv=None):
             print(json.dumps(verify_backup(args.backup_dir), indent=2))
         elif args.command == "restore":
             print(json.dumps(restore_backup(args.backup_dir, args.run_dir, args.runs_dir), indent=2))
-        elif args.command in {"state", "outcomes"}:
+        elif args.command in {"state", "outcomes", "progress"}:
             directory = saved_run(args.run_dir, args.runs_dir)
             with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
-                store = memory.working if args.command == "state" else memory.outcomes
-                key = "working_state" if args.command == "state" else "outcome_review"
-                result = {"run_dir": str(directory), key: store.current() if args.command == "state" else store.context()}
+                store = {"state": memory.working, "outcomes": memory.outcomes, "progress": memory.progress}[args.command]
+                key = {"state": "working_state", "outcomes": "outcome_review", "progress": "progress"}[args.command]
+                value = (store.current() if args.command == "state" else
+                         memory.monitor_progress() if args.command == "progress" else store.context())
+                result = {"run_dir": str(directory), key: value}
                 if args.history:
                     result["history"] = store.history(args.limit, args.offset)
                 print(json.dumps(result, ensure_ascii=False, indent=2))

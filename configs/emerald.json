@@ -8,6 +8,15 @@
   "memory_limit": 24,
   "ledger_limit": 24,
   "memory_search_rounds": 3,
+  "progress": {
+    "window": 32,
+    "no_progress_attempts": 12,
+    "strategy_attempts": 3,
+    "cycle_repetitions": 3,
+    "max_cycle_period": 8,
+    "similarity_threshold": 3,
+    "max_recovery_attempts": 2
+  },
   "storage": {
     "max_run_mb": 10240,
     "max_backup_mb": 20480,

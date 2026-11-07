@@ -41,6 +41,8 @@ class DemoAgent:
             "memory_search": None,
             "working_state_update": None,
             "outcome_reviews": demo_outcome_reviews(context),
+            "strategy": {"kind": "move", "target": "demo doorway", "intended_effect": "Approach the doorway"},
+            "recovery_plan": None,
             "additional_actions": [],
         }
         return value, {"backend": "scripted demo", "decision": value}

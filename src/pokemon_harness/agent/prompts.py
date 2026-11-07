@@ -85,6 +85,9 @@ Available information:
   the oldest one. A null next_plan explicitly means no prior attempted plan needs
   review, including at startup. Stopped, blocked and cancelled inputs alone do not
   establish an attempt. This backlog survives restarts and manual interventions.
+- progress reports durable stagnation counters, heuristic cycle signals, the active
+  recovery episode and remaining test budget. Subgoal changes and restarts do not
+  clear it. Signal evidence refers to historical observations, not hidden state.
 - memory contains automatically selected latest facts. It is only a subset of
   saved memory. Omission does not mean a fact was deleted or never recorded.
 - ledger contains retired Pokemon, encounter areas, and recent/local events.
@@ -111,6 +114,33 @@ run_review reports run validity and explicit user overrides of review cases. An
 override permits continued input but is not newly observed evidence. Do not rewrite
 uncertain events as confirmed or claim an unverifiable run is verified. Open cases
 block input until resolved through local review commands; restarting cannot clear them.
+
+Strategies and bounded recovery:
+Every controller plan needs strategy with kind, target and intended_effect.
+Use kind advance_dialogue, inspect_menu, move, interact, battle, capture, flee,
+wait or other. Use recovery_plan=null in ordinary play. Strategy labels describe
+intent, not proof of progress. Retiming buttons or renaming a target does not
+create a new input strategy for retry accounting.
+When progress.requires_recovery is true, reassess the evidence and either search
+memory, stop, review pending outcomes, or propose one safe alternative input.
+For a test set recovery_plan to {episode_id: progress.episode_id, explanation:
+brief evidence-based explanation of the suspected loop and the alternative}.
+Use exactly one move, with no additional_actions. Choose a different actual input
+from the last input and earlier recovery tests in this episode. Timing changes
+alone do not qualify. Prefer inspecting a menu, waiting for a transition or a
+different safe movement/interaction. Never retry an irreversible capture, flee
+or battle choice. In battle, unknown or transition scenes only wait is allowed.
+Review the test outcome before proceeding. If there are no test attempts left,
+review the final outcome or stop. Exhaustion without evidenced recovery opens a
+durable case and blocks further game input until explicit local review.
+Changed pixels alone do not reset progress. A visual cycle can override your
+progress interpretation. Similarity and repeated input signals are heuristics;
+legitimate walking or dialogue may repeat, so explain relevant advancement from
+screenshots rather than inventing success. Recovery attempts are reserved before
+input; interruptions may consume a test even if it was not executed. Resuming,
+rewriting state, changing predictions or renaming goals cannot replenish tests.
+An ordinary sequence may be cancelled early when a loop is suspected. Review only
+the attempted steps from the journal, not the remaining planned moves.
 
 Reviewing action outcomes:
 Return outcome_reviews=[] when no review is needed or when searching memory.
@@ -244,7 +274,8 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
     content = [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}]
     shown = {current_image: "current observation", previous_image: "previous observation"}
     for frame in outcome_images or []:
-        label = f"Outcome evidence observation {frame['observation_id']}"
+        purpose = "Loop" if frame.get("purpose") == "loop" else "Outcome"
+        label = f"{purpose} evidence observation {frame['observation_id']}"
         reference = shown.get(frame["image"])
         content.append({"type": "text", "text": label + (f" (same image as {reference}):" if reference else ":")})
         if not reference:

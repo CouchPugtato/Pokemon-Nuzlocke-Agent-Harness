@@ -92,6 +92,16 @@ DECISION_SCHEMA = obj({
     "memory_search": {"anyOf": [{"type": "null"}, MEMORY_SEARCH_SCHEMA]},
     "working_state_update": {"anyOf": [{"type": "null"}, WORKING_STATE_UPDATE]},
     "outcome_reviews": {"type": "array", "maxItems": 1, "items": OUTCOME_REVIEW},
+    "strategy": {"anyOf": [{"type": "null"}, obj({
+        "kind": {"type": "string", "enum": ["advance_dialogue", "inspect_menu", "move", "interact",
+                                             "battle", "capture", "flee", "wait", "other"]},
+        "target": {**text(120), "minLength": 1},
+        "intended_effect": {**text(), "minLength": 1},
+    })]},
+    "recovery_plan": {"anyOf": [{"type": "null"}, obj({
+        "episode_id": {"type": "integer", "minimum": 1},
+        "explanation": {**text(), "minLength": 1},
+    })]},
     "memory_updates": {"type": "array", "maxItems": 12, "items": obj({
         "category": {"type": "string", "enum": MEMORY_CATEGORIES},
         "key": {"type": "string", "minLength": 1, "maxLength": 120},
@@ -125,6 +135,10 @@ def validate_decision(value, observation_id, max_frames=60, max_sequence_length=
     for action in actions:
         validate_action(action, max_frames)
     action = value["action"]
+    if action["kind"] in {"press", "wait"} and value["strategy"] is None:
+        raise ValueError("Controller plans require a strategy with target and intended effect")
+    if action["kind"] not in {"press", "wait"} and value["recovery_plan"] is not None:
+        raise ValueError("Only controller plans may propose a recovery test")
     search = value["memory_search"]
     if (action["kind"] == "search_memory") != (search is not None):
         raise ValueError("Only search_memory actions must supply a memory_search request")

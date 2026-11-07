@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from .telemetry.storage import storage_settings
+from .memory.progress import progress_settings
 
 
 def load_config(path):
@@ -22,6 +23,7 @@ def load_config(path):
         raise ValueError("model.context_length must be an integer of at least 1024")
     value["run_dir"] = str((path.parent / value["run_dir"]).resolve())
     value["storage"] = storage_settings(value)
+    value["progress"] = progress_settings(value)
     value.setdefault("max_action_frames", 60)
     value.setdefault("max_sequence_length", 5)
     value.setdefault("sequence_delay_ms", 250)
