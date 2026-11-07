@@ -354,13 +354,13 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(memory.recent_turns()[0]["decision"]["decision_reason"], value["decision_reason"])
 
     def test_context_exhaustion_reports_real_usage_instead_of_claiming_output_limit(self):
-        envelope = {"usage": {"prompt_tokens": 7807, "completion_tokens": 385, "total_tokens": 8192},
+        envelope = {"usage": {"prompt_tokens": 7807, "completion_tokens": 385, "total_tokens": 32768},
                     "choices": [{"finish_reason": "length", "message": {"content": "{"}}]}
         with patch("pokemon_harness.agent.lmstudio.urlopen") as request:
             request.return_value.__enter__.return_value.read.return_value = json.dumps(envelope).encode()
             with self.assertRaises(InvalidModelResponse) as error:
-                LMStudio({"name": "test", "max_tokens": 8192}).decide([])
-        self.assertIn("prompt=7807, completion=385, total=8192", str(error.exception))
+                LMStudio({"name": "test", "max_tokens": 32768}).decide([])
+        self.assertIn("prompt=7807, completion=385, total=32768", str(error.exception))
         self.assertIn("loaded context", str(error.exception))
 
     def test_minimum_press_preserves_wait_duration_and_reports_actual_input(self):

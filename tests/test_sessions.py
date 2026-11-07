@@ -131,6 +131,13 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(main(["resume", "--runs-dir", str(runs_dir)]), 0)
             self.assertEqual(calls[1], calls[0])
             self.assertEqual(saved_run(None, runs_dir), directory)
+            self.assertEqual(main(["resume", "--runs-dir", str(runs_dir),
+                                   "--max-tokens", "4096", "--thinking", "off"]), 0)
+            self.assertEqual(calls[2]["model"]["max_tokens"], 4096)
+            self.assertFalse(calls[2]["model"]["thinking"])
+            self.assertEqual(calls[2]["rules"], calls[0]["rules"])
+            self.assertEqual(main(["resume", "--runs-dir", str(runs_dir)]), 0)
+            self.assertEqual(calls[3]["model"], calls[2]["model"])
 
     def test_new_run_refuses_existing_memory(self):
         directory = self.root / "occupied"

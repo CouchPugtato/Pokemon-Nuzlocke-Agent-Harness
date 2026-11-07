@@ -16,6 +16,9 @@ def load_config(path):
         raise ValueError("objective must be nonempty text")
     if not isinstance(value["model"], dict) or not isinstance(value["emulator"], dict):
         raise ValueError("model and emulator must be objects")
+    value["model"].setdefault("context_length", 32768)
+    if type(value["model"]["context_length"]) is not int or value["model"]["context_length"] < 1024:
+        raise ValueError("model.context_length must be an integer of at least 1024")
     value["run_dir"] = str((path.parent / value["run_dir"]).resolve())
     value.setdefault("max_action_frames", 60)
     value.setdefault("max_sequence_length", 5)

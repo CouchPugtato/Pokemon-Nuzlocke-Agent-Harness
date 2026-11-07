@@ -69,7 +69,16 @@ def play_run(args):
         if config["emulator"]["backend"] == "replay":
             config["emulator"]["screenshots_dir"] = str(
                 (config_path.resolve().parent / config["emulator"]["screenshots_dir"]).resolve())
+    if args.context_length is not None:
+        config["model"]["context_length"] = args.context_length
+    if args.max_tokens is not None:
+        config["model"]["max_tokens"] = args.max_tokens
+    if args.thinking is not None:
+        config["model"]["thinking"] = args.thinking == "on"
     agent = LMStudio(config["model"])
+    agent.prepare()
+    thinking = ("on" if config["model"]["thinking"] else "off") if "thinking" in config["model"] else "model default"
+    print(f"Generation: max_tokens={config['model'].get('max_tokens', 32768)}, thinking={thinking}", flush=True)
     emulator = emulator_for(config, config_path)
     print(f"Run: {directory}\nObjective: {config['objective']}", flush=True)
     print("Stop: F8, Ctrl+C, or pokemon-harness stop in another terminal. Emulator keeps running.", flush=True)
@@ -81,6 +90,9 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     play = commands.add_parser("run", help="Start a fresh run using configs/emerald.json by default")
     play.add_argument("--config", type=Path, default=Path("configs/emerald.json"))
+    play.add_argument("--context-length", type=int, help="LM Studio load-time context size in tokens")
+    play.add_argument("--max-tokens", type=int, help="Generation output budget, including reasoning")
+    play.add_argument("--thinking", choices=["on", "off"], help="Toggle thinking for compatible model templates")
     play.add_argument("--run-dir", type=Path, help="Optional empty directory for the new run")
     play.add_argument("--runs-dir", type=Path, default=Path("runs"))
     goal = play.add_mutually_exclusive_group()
@@ -92,6 +104,9 @@ def main(argv=None):
     resume.add_argument("run_dir", nargs="?", type=Path)
     resume.add_argument("--runs-dir", type=Path, default=Path("runs"))
     resume.add_argument("--turns", type=int, default=500)
+    resume.add_argument("--context-length", type=int, help="Override the saved model's load-time context size")
+    resume.add_argument("--max-tokens", type=int, help="Override the saved generation output budget")
+    resume.add_argument("--thinking", choices=["on", "off"], help="Toggle thinking for compatible model templates")
     stop = commands.add_parser("stop", aliases=["pause"], help="Stop the latest harness without pausing the emulator")
     stop.add_argument("run_dir", nargs="?", type=Path)
     stop.add_argument("--runs-dir", type=Path, default=Path("runs"))

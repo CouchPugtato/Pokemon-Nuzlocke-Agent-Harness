@@ -21,21 +21,84 @@ class LMStudio:
         self.base_url = config.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/")
         if not config.get("name"):
             raise ValueError("model.name must be the loaded vision model identifier")
+        self.inference_model = config["name"]
+        self.context_length = config.get("context_length", 32768)
+        if type(self.context_length) is not int or self.context_length < 1024:
+            raise ValueError("model.context_length must be an integer of at least 1024")
+        if type(config.get("max_tokens", 32768)) is not int or config.get("max_tokens", 32768) < 1:
+            raise ValueError("model.max_tokens must be a positive integer")
+        if "thinking" in config and type(config["thinking"]) is not bool:
+            raise ValueError("model.thinking must be true or false")
 
-    def decide(self, messages):
-        payload = {
-            "model": self.config["name"], "messages": messages,
-            "temperature": self.config.get("temperature", 0.1),
-            "max_tokens": self.config.get("max_tokens", 8192), "stream": False,
-            "response_format": {"type": "json_schema", "json_schema": {
-                "name": "game_decision", "strict": True, "schema": DECISION_SCHEMA}},
-        }
+    def _headers(self):
         headers = {"Content-Type": "application/json"}
         token = os.environ.get(self.config.get("api_key_env", "LM_STUDIO_API_KEY"))
         if token:
             headers["Authorization"] = "Bearer " + token
+        return headers
+
+    def _native(self, endpoint, payload=None):
+        if not self.base_url.endswith("/v1"):
+            raise ValueError("LM Studio base_url must end in /v1 for managed model loading")
+        url = self.base_url[:-3] + "/api/v1/models" + endpoint
+        request = Request(url, headers=self._headers(),
+                          data=json.dumps(payload).encode("utf-8") if payload is not None else None)
+        with urlopen(request, timeout=self.config.get("timeout_seconds", 180)) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def prepare(self):
+        """Load and verify context independently of the generation token budget."""
+        models = self._native("")["models"]
+        name = self.config["name"]
+        matches = [model for model in models if name == model["key"]
+                   or name in model.get("variants", [])
+                   or any(instance["id"] == name for instance in model.get("loaded_instances", []))]
+        if not matches:
+            matches = [model for model in models if model["key"].rsplit("/", 1)[-1] == name]
+        if len(matches) != 1:
+            raise ValueError(f"Cannot uniquely resolve model {name!r} in LM Studio; use its full model key")
+        model = matches[0]
+        maximum = model.get("max_context_length")
+        if maximum and self.context_length > maximum:
+            raise ValueError(f"Requested context {self.context_length} exceeds model maximum {maximum}")
+        instances = model.get("loaded_instances", [])
+        for instance in instances:
+            actual = instance.get("config", {}).get("context_length", 0)
+            if actual >= self.context_length:
+                self.inference_model = instance["id"]
+                print(f"LM Studio: {self.inference_model}, verified context {actual} tokens", flush=True)
+                return
+        # Reload only an instance of the selected model. Other models stay loaded.
+        if instances:
+            self._native("/unload", {"instance_id": instances[0]["id"]})
+        print(f"Loading {model['key']} with context {self.context_length} tokens...", flush=True)
+        payload = {"model": name if name in model.get("variants", []) else model["key"],
+                   "context_length": self.context_length, "echo_load_config": True}
+        loaded = self._native("/load", payload)
+        actual = loaded.get("load_config", {}).get("context_length", 0)
+        # Some server versions reuse an existing instance despite load parameters.
+        if loaded.get("instance_id") and actual < self.context_length:
+            self._native("/unload", {"instance_id": loaded["instance_id"]})
+            loaded = self._native("/load", payload)
+            actual = loaded.get("load_config", {}).get("context_length", 0)
+        if loaded.get("status") != "loaded" or not loaded.get("instance_id") or actual < self.context_length:
+            raise ValueError(f"LM Studio did not confirm context {self.context_length}; reported {actual}. "
+                             "Stopping before game input")
+        self.inference_model = loaded["instance_id"]
+        print(f"LM Studio: {self.inference_model}, verified context {actual} tokens", flush=True)
+
+    def decide(self, messages):
+        payload = {
+            "model": self.inference_model, "messages": messages,
+            "temperature": self.config.get("temperature", 0.1),
+            "max_tokens": self.config.get("max_tokens", 32768), "stream": False,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "game_decision", "strict": True, "schema": DECISION_SCHEMA}},
+        }
+        if "thinking" in self.config:
+            payload["reasoning_effort"] = "medium" if self.config["thinking"] else "none"
         request = Request(self.base_url + "/chat/completions",
-                          data=json.dumps(payload).encode("utf-8"), headers=headers)
+                          data=json.dumps(payload).encode("utf-8"), headers=self._headers())
         timeout = self.config.get("timeout_seconds", 180)
         try:
             with urlopen(request, timeout=timeout) as response:
@@ -64,10 +127,13 @@ class LMStudio:
                                f"completion={usage.get('completion_tokens', 'unknown')}, "
                                f"total={usage.get('total_tokens', 'unknown')}; "
                                f"requested output limit={payload['max_tokens']}. "
-                               "The loaded context window may be full: increase LM Studio's loaded "
-                               "context length or reduce prompt/history. Reasoning and decision JSON "
-                               "share the remaining space. Increase model.max_tokens only if the "
-                               "output budget itself was exhausted")
+                               "Reasoning and decision JSON share the output budget. ")
+                    if usage.get("completion_tokens", 0) >= payload["max_tokens"]:
+                        detail += ("The output budget was exhausted. Use --max-tokens to adjust it; "
+                                   "if reasoning is repetitive, try --thinking off instead")
+                    else:
+                        detail += ("The loaded context window may be full: increase --context-length "
+                                   "or reduce prompt/history")
                 raise ValueError(detail)
             value = json.loads(choice["message"]["content"])
         except (KeyError, IndexError, TypeError, ValueError) as exc:

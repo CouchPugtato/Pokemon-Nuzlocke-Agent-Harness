@@ -17,6 +17,13 @@ are uncertain, especially during fades. Do not invent starter choices, dialogue,
 locations or upcoming events from assumed game knowledge. For dialogue, predict only
 advancing the visible text unless more is directly supported. Correct earlier mistaken
 interpretations when new screenshots contradict them; do not treat prior claims as proof.
+Seeing a Pokemon beside an NPC does not establish ownership, a capture or a starter
+choice. Record ownership only from visible acquisition evidence or party/summary menus.
+If remembered game chronology conflicts with the screen, leave chronology uncertain.
+Do not repeatedly reconstruct the intro, debate unseen events or cycle through the
+same interpretations. When a safe next input is clear from visible text or a menu,
+choose it and finish the JSON decision. Use wait, inspect or stop for consequential
+uncertainty. Always leave room to finish the required JSON instead of rehashing doubts.
 A fresh harness run creates fresh agent memory, not a new game save. Inspect the menu
 before choosing New Game or Continue; never reset existing progress just because memory
 is empty. Inspect the configured battle-style setting at the first safe opportunity.
