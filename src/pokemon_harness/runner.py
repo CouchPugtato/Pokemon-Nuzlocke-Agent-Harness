@@ -5,6 +5,7 @@ import json
 
 from .agent.lmstudio import InvalidModelResponse, LMStudio
 from .agent.context_budget import ContextBudgetError, calibration_key, fit_request, validate_visual_reviews
+from .memory.conversation import compaction_settings
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
 from .control.session import StopRequested
@@ -223,11 +224,29 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
     search_count = 0
     review_count = 0
     search_results = []
-    for _ in range(budget + review_budget + 1):
+    settings = compaction_settings(config)
+    compacted = False
+    pressure = False
+    for _ in range(budget + review_budget + 2):
         if storage:
             storage.check()
+        if not compacted and memory.conversation.compaction_due(settings, pressure):
+            if control:
+                control.check()
+            if storage:
+                storage.check(128 * 1024)
+            checkpoint_id = memory.save_checkpoint(compaction=settings)
+            compacted = True
+            previous_image = current_image
+            current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
+            sequence_images = []
+            print(f"Context compacted at checkpoint {checkpoint_id}; captured a fresh observation", flush=True)
         recent = memory.recent_turns(config["recent_turns"])
         location = recent[-1]["decision"].get("location", "") if recent else ""
+        checkpoint = memory.conversation.active_checkpoint()
+        if checkpoint and "compaction" in checkpoint["payload"]:
+            boundary_turn = checkpoint["payload"]["source_watermarks"]["turns"]
+            recent = [turn for turn in recent[:-2] if turn["id"] > boundary_turn] + recent[-2:]
         facts, events = memory.facts(), memory.events()
         context = {
             "observation_id": observation_id,
@@ -281,6 +300,9 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             loaded_context = agent.loaded_context_length if isinstance(agent, LMStudio) else None
             context, request, report = fit_request(context, model_settings, current_image, previous_image,
                                                    sequence_images, outcome_images, loaded_context, factor)
+            pressure = any(report["omitted"].get(key) for key in ("recent_turns", "conversation_events"))
+            if not compacted and pressure and memory.conversation.compaction_due(settings, pressure=True):
+                continue
             write_json(prefix.with_suffix(".context.json"), context)
             write_json(prefix.with_suffix(".budget.json"), report)
             if report["omitted"]:

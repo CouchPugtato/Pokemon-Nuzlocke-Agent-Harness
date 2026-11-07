@@ -8,6 +8,11 @@
   "memory_limit": 24,
   "ledger_limit": 24,
   "memory_search_rounds": 3,
+  "compaction": {
+    "event_threshold": 96,
+    "minimum_events": 24,
+    "review_limit": 12
+  },
   "progress": {
     "window": 32,
     "no_progress_attempts": 12,

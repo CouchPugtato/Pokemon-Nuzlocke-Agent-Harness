@@ -110,6 +110,12 @@ Available information:
   Old observation IDs in journal messages do not provide their screenshot pixels.
   legacy_turn_watermark identifies older history predating this journal; no missing
   conversation has been invented. Older messages remain archived when recall is trimmed.
+  continuity is a bounded deterministic projection of original outcome reviews,
+  refreshed from their latest revisions. Source review, turn and observation IDs
+  identify archive records; they do not supply screenshot pixels. These remain fallible model
+  assessments, not verified game facts. Omitted reviews remain in the archive.
+  proposed_strategy preserves only the historical kind and target, not its predicted
+  effect. Compaction never resets disputes, review gates or recovery limits.
 - memory contains automatically selected latest facts. It is only a subset of
   saved memory. Omission does not mean a fact was deleted or never recorded.
 - ledger contains retired Pokemon, encounter areas, and recent/local events.

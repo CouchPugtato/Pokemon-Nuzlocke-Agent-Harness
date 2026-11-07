@@ -11,6 +11,23 @@ SOURCE_TABLES = ("facts", "events", "turns", "outcome_reviews", "contradiction_r
                  "progress_events", "escalation_cases", "case_resolutions")
 
 
+def compaction_settings(config):
+    value = config.get("compaction", {})
+    if not isinstance(value, dict):
+        raise ValueError("compaction must be an object")
+    result = {"event_threshold": 96, "minimum_events": 24, "review_limit": 12}
+    if set(value) - set(result):
+        raise ValueError("Unknown compaction setting")
+    result.update(value)
+    for key, lower, upper in (("event_threshold", 8, 10000), ("minimum_events", 1, 10000),
+                              ("review_limit", 3, 24)):
+        if type(result[key]) is not int or not lower <= result[key] <= upper:
+            raise ValueError(f"compaction.{key} must be an integer between {lower} and {upper}")
+    if result["minimum_events"] > result["event_threshold"]:
+        raise ValueError("compaction.minimum_events must not exceed event_threshold")
+    return result
+
+
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -188,6 +205,41 @@ class Conversation:
             self.fail(row[0], "interrupted", "Harness ended before this decision was committed")
         return [row[0] for row in rows]
 
+    def compaction_due(self, settings, pressure=False):
+        checkpoint = self.active_checkpoint()
+        boundary = (checkpoint["boundary_id"] or 0) if checkpoint else 0
+        count = self.connection.execute("SELECT COUNT(*) FROM conversation_events WHERE id>?", (boundary,)).fetchone()[0]
+        return count >= (settings["minimum_events"] if pressure else settings["event_threshold"])
+
+    def continuity(self, limit, watermark=None):
+        """project original reviews without copying narratives or promoting confidence"""
+        reviews = []
+        if watermark is None:
+            watermark = self.connection.execute("SELECT COALESCE(MAX(id),0) FROM outcome_reviews").fetchone()[0]
+        for outcome in ("progress_observed", "no_progress_observed", "uncertain"):
+            rows = self.connection.execute("""
+                SELECT r.* FROM outcome_reviews r WHERE r.id<=? AND r.revision=(
+                    SELECT MAX(latest.revision) FROM outcome_reviews latest
+                    WHERE latest.target_turn_id=r.target_turn_id AND latest.id<=?)
+                AND EXISTS(SELECT 1 FROM json_each(r.payload,'$.steps') s
+                    WHERE json_extract(s.value,'$.assessment')=?) ORDER BY r.id DESC LIMIT ?
+            """, (watermark, watermark, outcome, max(1, limit // 3))).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload"])
+                decision = json.loads(self.connection.execute("SELECT decision FROM turns WHERE id=?",
+                                      (row["target_turn_id"],)).fetchone()[0])
+                strategy = decision.get("strategy")
+                reviews.append({"source_review_id": row["id"], "turn_id": row["target_turn_id"],
+                                "proposed_strategy": {key: strategy[key] for key in ("kind", "target")}
+                                    if strategy else None,
+                                "review_observation_id": row["observation_id"],
+                                "steps": [{key: step[key] for key in ("step_index", "before_observation_id",
+                                           "after_observation_id", "assessment")} for step in payload["steps"]]})
+        reviews = {review["source_review_id"]: review for review in reviews}
+        return {"method": "original_source_projection", "historical_only": True,
+                "reviews": [reviews[key] for key in sorted(reviews)],
+                "selection": "Latest reviews per outcome category with original evidence ids; not exhaustive"}
+
     def checkpoint(self, snapshot):
         if self.connection.execute("SELECT 1 FROM conversation_requests WHERE status IN "
                                    "('requested','responded','validated','committed','executing') LIMIT 1").fetchone():
@@ -204,7 +256,7 @@ class Conversation:
             (boundary, observation, revision, payload, digest, timestamp()))
         checkpoint_id = cursor.lastrowid
         self.connection.execute("INSERT INTO conversation_checkpoint_tail SELECT ?,id FROM conversation_events "
-                                "ORDER BY id DESC LIMIT 12", (checkpoint_id,))
+                                "ORDER BY id DESC LIMIT ?", (checkpoint_id, 4 if "compaction" in snapshot else 12))
         self.connection.execute("INSERT OR REPLACE INTO conversation_active VALUES(1,?)", (checkpoint_id,))
         return checkpoint_id
 
@@ -230,6 +282,10 @@ class Conversation:
                 raise ValueError("Conversation checkpoint references unavailable source records")
         if payload.get("working_state", {}).get("revision") != (row["working_revision"] or 0):
             raise ValueError("Conversation checkpoint working revision is inconsistent")
+        if "compaction" in payload:
+            settings = compaction_settings({"compaction": payload["compaction"]})
+            if payload.get("continuity") != self.continuity(settings["review_limit"], sources["outcome_reviews"]):
+                raise ValueError("Conversation checkpoint continuity does not match original sources")
         return dict(row, payload=payload)
 
     def context(self, limit=12):
@@ -245,7 +301,23 @@ class Conversation:
         recent = [self._project(self.connection.execute("SELECT * FROM conversation_events WHERE id=?", (event_id,)).fetchone())
                   for event_id in sorted(set(ids))[-limit:]]
         interrupted = self.connection.execute("SELECT COUNT(*) FROM conversation_requests WHERE status='interrupted'").fetchone()[0]
-        return {"checkpoint": {key: checkpoint[key] for key in ("id", "boundary_id", "observation_id", "working_revision", "created_at")}
+        continuity = self.continuity(checkpoint["payload"]["compaction"]["review_limit"]) \
+            if checkpoint and "compaction" in checkpoint["payload"] else {}
+        for review in continuity.get("reviews", []):
+            conflicts = self.connection.execute("""
+                SELECT DISTINCT i.key FROM facts f JOIN fact_invalidations i ON i.fact_id=f.id
+                JOIN turns t ON t.observation_id=f.observation_id WHERE t.id=? AND NOT EXISTS(
+                    SELECT 1 FROM fact_revalidations v WHERE v.fact_id=i.fact_id AND v.key=i.key)
+                UNION SELECT i.key FROM working_revisions w JOIN working_invalidations i ON i.revision=w.revision
+                WHERE w.turn_id=?
+                UNION SELECT i.key FROM action_intents a JOIN working_invalidations i ON i.revision=a.working_revision
+                WHERE a.turn_id=?
+            """, (review["turn_id"], review["turn_id"], review["turn_id"])).fetchall()
+            if conflicts:
+                review.update(steps=[], proposed_strategy=None, memory_validity="invalidated",
+                              contradiction_keys=[row[0] for row in conflicts])
+        return {"continuity": continuity,
+                "checkpoint": {key: checkpoint[key] for key in ("id", "boundary_id", "observation_id", "working_revision", "created_at")}
                 if checkpoint else None, "recent": recent, "interrupted_request_count": interrupted,
                 "legacy_turn_watermark": int(self.connection.execute(
                     "SELECT value FROM metadata WHERE key='conversation_legacy_turn_id'").fetchone()[0]),

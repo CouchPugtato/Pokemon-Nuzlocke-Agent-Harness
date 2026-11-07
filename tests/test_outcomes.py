@@ -15,6 +15,7 @@ from pokemon_harness.config import load_config
 from pokemon_harness.demo import DemoAgent, create_images, demo_outcome_reviews
 from pokemon_harness.emulator.interface import ReplayEmulator
 from pokemon_harness.memory.database import Memory
+from pokemon_harness.memory.conversation import compaction_settings
 from pokemon_harness.memory.retrieval import recent_turn_context
 from pokemon_harness.runner import run
 from pokemon_harness.telemetry.backup import create_backup
@@ -27,6 +28,49 @@ def decision(observation_id):
 
 
 class OutcomeTests(unittest.TestCase):
+    def test_compacted_reviews_do_not_revive_disputed_interpretations(self):
+        self.attempted(facts=[{"category": "world", "key": "exit", "claim": "Exit visible",
+                              "location": "Town", "basis": "observed", "confidence": "high", "status": "active"}])
+        observation, reviews = self.review()
+        self.memory.review_outcomes(observation, reviews)
+        self.memory.save_checkpoint(compaction=compaction_settings({}))
+        with self.memory.connection:
+            self.memory.contradictions.apply([{
+                "operation": "open", "key": "exit conflict", "expected_revision": 0,
+                "reason": "Fresh screenshot conflicts", "evidence_observation_ids": [observation],
+                "fact_ids": [1], "event_keys": [], "replacement_facts": [], "correction_event_keys": []
+            }], observation)
+        review = self.memory.conversation.context()["continuity"]["reviews"][0]
+        self.assertEqual(review["memory_validity"], "invalidated")
+        self.assertEqual(review["steps"], [])
+        self.assertIsNone(review["proposed_strategy"])
+        self.assertTrue(self.memory.conversation.active_checkpoint()["payload"]["continuity"]["reviews"][0]["steps"])
+
+    def test_compaction_rebuilds_original_reviews_and_tracks_later_revisions(self):
+        turn = self.attempted()
+        observation, reviews = self.review()
+        reviews[0]["steps"][0].update(assessment="no_progress_observed", explanation="untrusted narrative")
+        self.memory.review_outcomes(observation, reviews)
+        before = self.memory.export()
+        self.memory.save_checkpoint(compaction=compaction_settings({}))
+        checkpoint = self.memory.conversation.active_checkpoint()
+        summary = self.memory.conversation.context()["continuity"]
+        self.assertEqual(summary["reviews"][0]["steps"][0]["assessment"], "no_progress_observed")
+        self.assertNotIn("untrusted narrative", json.dumps(summary))
+        self.assertEqual(summary["reviews"][0]["turn_id"], turn)
+        self.assertEqual(summary["reviews"][0]["steps"][0]["before_observation_id"], 1)
+        after = self.memory.export()
+        for key in ("facts", "events", "working_state", "progress"):
+            self.assertEqual(before[key], after[key])
+        reviews[0]["expected_revision"] = 1
+        reviews[0]["steps"][0]["assessment"] = "uncertain"
+        self.memory.review_outcomes(observation, reviews)
+        self.assertEqual(self.memory.conversation.context()["continuity"]["reviews"][0]["steps"][0]["assessment"], "uncertain")
+        self.assertEqual(self.memory.conversation.active_checkpoint(), checkpoint)
+        self.memory.save_checkpoint()
+        self.assertEqual(self.memory.conversation.active_checkpoint()["payload"]["continuity"],
+                         self.memory.conversation.context()["continuity"])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -36,8 +80,10 @@ class OutcomeTests(unittest.TestCase):
         self.memory.initialize({"objective": "Beat first gym", "rules": []})
         self.memory.observe("before.png", "before", "test")
 
-    def attempted(self, partial=False, unknown=False):
+    def attempted(self, partial=False, unknown=False, facts=None):
         value = decision(1)
+        if facts is not None:
+            value["memory_updates"] = list(facts)
         if partial:
             value["additional_actions"] = [dict(value["action"]), dict(value["action"])]
         turn = self.memory.plan(1, value)

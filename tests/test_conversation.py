@@ -18,6 +18,7 @@ from pokemon_harness.control.session import RunControl, request_stop
 from pokemon_harness.demo import DemoAgent, create_images
 from pokemon_harness.emulator.interface import ReplayEmulator
 from pokemon_harness.memory.database import Memory
+from pokemon_harness.memory.conversation import compaction_settings
 from pokemon_harness.runner import run
 from pokemon_harness.telemetry.backup import create_backup
 from pokemon_harness.telemetry.recorder import write_json
@@ -25,6 +26,49 @@ from pokemon_harness.telemetry.restore import restore_backup
 
 
 class ConversationTests(unittest.TestCase):
+    def test_compaction_settings_are_bounded_and_reject_invalid_values(self):
+        for settings in ({"review_limit": 0}, {"event_threshold": True}, {"minimum_events": 1000}, {"unknown": 1}):
+            with self.assertRaises(ValueError):
+                compaction_settings({"compaction": settings})
+
+    def test_compaction_cadence_and_pressure_use_only_the_uncheckpointed_suffix(self):
+        settings = compaction_settings({"compaction": {"event_threshold": 16, "minimum_events": 4}})
+        self.completed()
+        self.assertFalse(self.memory.conversation.compaction_due(settings))
+        self.assertTrue(self.memory.conversation.compaction_due(settings, pressure=True))
+        self.memory.save_checkpoint(compaction=settings)
+        self.assertFalse(self.memory.conversation.compaction_due(settings, pressure=True))
+        self.assertEqual(len(self.memory.conversation.context()["recent"]), 4)
+
+    def test_compaction_publication_failure_retains_the_previous_boundary_and_archive(self):
+        self.completed()
+        self.memory.save_checkpoint()
+        before = self.memory.conversation.active_checkpoint()
+        original = self.memory.conversation.checkpoint
+
+        def fail(snapshot):
+            original(snapshot)
+            raise OSError("failed publication")
+
+        with patch.object(self.memory.conversation, "checkpoint", side_effect=fail):
+            with self.assertRaises(OSError):
+                self.memory.save_checkpoint(compaction=compaction_settings({}))
+        self.assertEqual(self.memory.conversation.active_checkpoint(), before)
+        self.assertEqual(len(self.memory.conversation.history(100)), 6)
+
+    def test_compaction_rejects_a_rehashed_summary_without_matching_original_sources(self):
+        self.completed()
+        self.memory.save_checkpoint(compaction=compaction_settings({}))
+        checkpoint = self.memory.conversation.active_checkpoint()
+        payload = checkpoint["payload"]
+        payload["continuity"]["reviews"] = [{"turn_id": 999, "assessment": "progress_observed"}]
+        encoded = json.dumps(payload, sort_keys=True)
+        with self.memory.connection:
+            self.memory.connection.execute("UPDATE conversation_checkpoints SET payload=?,payload_hash=? WHERE id=?",
+                                           (encoded, hashlib.sha256(encoded.encode()).hexdigest(), checkpoint["id"]))
+        with self.assertRaisesRegex(ValueError, "original sources"):
+            self.memory.conversation.context()
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -177,6 +221,38 @@ class ConversationTests(unittest.TestCase):
 
 
 class ConversationIntegrationTests(unittest.TestCase):
+    def test_automatic_compaction_uses_fresh_capture_before_generation(self):
+        self.config["compaction"] = {"event_threshold": 8, "minimum_events": 1, "review_limit": 3}
+        requests = []
+
+        class Agent:
+            def decide(self, request):
+                requests.append(json.loads(request[1]["content"][0]["text"]))
+                return DemoAgent().decide(request)
+
+        emulator = ReplayEmulator(self.images)
+        run(self.config, emulator, Agent(), turns=3)
+        compacted = [context for context in requests if context["conversation"]["continuity"]]
+        self.assertTrue(compacted)
+        for context in compacted:
+            self.assertGreater(context["observation_id"], context["conversation"]["checkpoint"]["observation_id"])
+        self.assertEqual(len(emulator.actions), 3)
+
+    def test_failed_automatic_compaction_prevents_generation_and_input(self):
+        self.config["compaction"] = {"event_threshold": 8, "minimum_events": 1, "review_limit": 3}
+        run(self.config, ReplayEmulator(self.images), DemoAgent(), turns=1)
+        with contextlib.closing(Memory(self.directory / "memory.sqlite")) as memory:
+            with memory.connection:
+                for _ in range(8):
+                    memory.conversation.append("observation", {})
+        agent = unittest.mock.Mock()
+        emulator = ReplayEmulator(self.images)
+        with patch.object(Memory, "save_checkpoint", side_effect=OSError("checkpoint failure")):
+            with self.assertRaisesRegex(OSError, "checkpoint failure"):
+                run(self.config, emulator, agent, turns=1)
+        agent.decide.assert_not_called()
+        self.assertEqual(emulator.actions, [])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

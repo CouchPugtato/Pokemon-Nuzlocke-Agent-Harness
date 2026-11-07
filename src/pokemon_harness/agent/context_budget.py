@@ -114,6 +114,9 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
         elif selected.get("conversation", {}).get("recent"):
             selected["conversation"]["recent"].pop(0)
             omitted("conversation_events")
+        elif selected.get("conversation", {}).get("continuity", {}).get("reviews"):
+            selected["conversation"]["continuity"]["reviews"].pop(0)
+            omitted("continuity_reviews")
         elif any(event.get("type") == "progress" for event in selected.get("ledger", {}).get("recent_or_local_events", [])):
             entries = selected["ledger"]["recent_or_local_events"]
             index = next(index for index, event in enumerate(entries) if event.get("type") == "progress")

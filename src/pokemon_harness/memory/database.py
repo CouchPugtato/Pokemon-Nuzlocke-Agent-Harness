@@ -9,7 +9,7 @@ from .outcomes import Outcomes
 from .progress import Progress
 from .contradictions import Contradictions
 from .budgets import BudgetCalibration
-from .conversation import Conversation, SOURCE_TABLES
+from .conversation import Conversation, SOURCE_TABLES, compaction_settings
 from ..control.loop_detection import image_features
 from ..telemetry.cleanup import cleanup_operations
 
@@ -183,9 +183,9 @@ class Memory:
             self.connection.execute("INSERT INTO notes(kind,payload,created_at) VALUES('memory_search',?,?)", (encode(result), now()))
             self.conversation.complete_readonly(request_id, observation_id, "search_completed", result)
 
-    def save_checkpoint(self):
+    def save_checkpoint(self, compaction=None):
         with self.connection:
-            self.conversation.active_checkpoint()
+            previous = self.conversation.active_checkpoint()
             row = self.connection.execute("SELECT value FROM metadata WHERE key='identity'").fetchone()
             if row is None:
                 raise ValueError("Initialize the run before checkpointing its conversation")
@@ -197,6 +197,11 @@ class Memory:
                                    "blocking_case_ids": [case["id"] for case in cases if case["blocking"]]},
                         "source_watermarks": {table: self.connection.execute(
                             f"SELECT COALESCE(MAX(id),0) FROM {table}").fetchone()[0] for table in SOURCE_TABLES}}
+            settings = compaction or (previous["payload"].get("compaction") if previous else None)
+            if settings:
+                settings = compaction_settings({"compaction": settings})
+                snapshot["compaction"] = settings
+                snapshot["continuity"] = self.conversation.continuity(settings["review_limit"])
             return self.conversation.checkpoint(snapshot)
 
     def monitor_progress(self):

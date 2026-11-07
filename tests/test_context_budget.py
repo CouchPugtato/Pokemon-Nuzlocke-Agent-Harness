@@ -37,6 +37,18 @@ def context():
 
 
 class ContextBudgetTests(unittest.TestCase):
+    def test_compacted_continuity_is_optional_and_does_not_displace_authoritative_state(self):
+        original = context()
+        original["conversation"] = {"recent": [], "continuity": {
+            "historical_only": True, "reviews": [{"source_review_id": 1, "steps": "x" * 100000}]}}
+        saved = copy.deepcopy(original)
+        selected, _, report = fit_request(original, self.model, b"current")
+        self.assertEqual(report["omitted"]["continuity_reviews"], 1)
+        self.assertEqual(selected["conversation"]["continuity"]["reviews"], [])
+        self.assertEqual(original, saved)
+        for key in ("ledger", "working_state", "progress", "contradictions", "rules"):
+            self.assertEqual(selected[key], original[key])
+
     def setUp(self):
         self.model = {"name": "fixture", "context_length": 32768, "max_tokens": 32768}
 
