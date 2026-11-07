@@ -18,6 +18,7 @@ from .runner import run
 from .telemetry.recorder import RunLock, write_json
 from .telemetry.storage import StorageGuard
 from .telemetry.cleanup import closing_safely
+from .telemetry.backup import create_backup, verify_backup
 
 
 def emulator_for(config, config_path):
@@ -166,12 +167,25 @@ def main(argv=None):
     resolve.add_argument("--correction-key", default="")
     resolve.add_argument("--allow-continue", action="store_true",
                          help="Explicitly continue an unverifiable run without changing the event ledger")
+    backup = commands.add_parser("backup", help="Snapshot a stopped run with its memory and evidence")
+    backup.add_argument("run_dir", nargs="?", type=Path)
+    backup.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    backup.add_argument("--backup-dir", type=Path, help="Backup storage directory separate from the run")
+    verify = commands.add_parser("verify-backup", help="Check a backup manifest and its database evidence")
+    verify.add_argument("backup_dir", type=Path)
     demo = commands.add_parser("demo", help="Offline synthetic loop: no emulator or LM Studio required")
     demo.add_argument("--run-dir", type=Path, default=Path("runs/demo"))
     args = parser.parse_args(argv)
     try:
         if args.command in {"run", "resume"}:
             play_run(args)
+        elif args.command == "backup":
+            directory = saved_run(args.run_dir, args.runs_dir)
+            target = create_backup(directory, args.backup_dir)
+            print(json.dumps({"backup_dir": str(target), "verified": True,
+                              "scope": "harness_state_only", "emulator_save_included": False}, indent=2))
+        elif args.command == "verify-backup":
+            print(json.dumps(verify_backup(args.backup_dir), indent=2))
         elif args.command in {"cases", "case-open", "resolve-case"}:
             directory = saved_run(args.run_dir, args.runs_dir)
             with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:

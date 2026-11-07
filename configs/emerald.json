@@ -10,6 +10,7 @@
   "memory_search_rounds": 3,
   "storage": {
     "max_run_mb": 10240,
+    "max_backup_mb": 20480,
     "min_free_mb": 512,
     "action_headroom_mb": 8,
     "emergency_reserve_mb": 1

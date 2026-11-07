@@ -7,7 +7,8 @@ from pathlib import Path
 
 
 MIB = 1024 * 1024
-DEFAULTS = {"max_run_mb": 10240, "min_free_mb": 512, "action_headroom_mb": 8, "emergency_reserve_mb": 1}
+DEFAULTS = {"max_run_mb": 10240, "max_backup_mb": 20480, "min_free_mb": 512,
+            "action_headroom_mb": 8, "emergency_reserve_mb": 1}
 
 
 def storage_settings(config):
@@ -20,6 +21,8 @@ def storage_settings(config):
             raise ValueError(f"storage.{key} must be an integer with a valid positive capacity")
     if settings["max_run_mb"] <= settings["action_headroom_mb"] + settings["emergency_reserve_mb"]:
         raise ValueError("storage.max_run_mb must exceed action headroom plus emergency reserve")
+    if settings["max_backup_mb"] <= settings["action_headroom_mb"] + settings["emergency_reserve_mb"]:
+        raise ValueError("storage.max_backup_mb must exceed action headroom plus emergency reserve")
     return settings
 
 
