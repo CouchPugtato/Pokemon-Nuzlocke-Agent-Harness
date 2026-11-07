@@ -8,6 +8,12 @@
   "memory_limit": 24,
   "ledger_limit": 24,
   "memory_search_rounds": 3,
+  "automatic_recall": {
+    "evidence_limit": 6,
+    "location_limit": 3,
+    "image_candidate_limit": 4,
+    "aliases": []
+  },
   "archive_retrieval": {
     "max_images": 4,
     "max_bytes": 8388608,

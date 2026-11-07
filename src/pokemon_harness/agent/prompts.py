@@ -118,6 +118,12 @@ Available information:
   effect. Compaction never resets disputes, review gates or recovery limits.
 - memory contains automatically selected latest facts. It is only a subset of
   saved memory. Omission does not mean a fact was deleted or never recorded.
+  recall_reasons identifies matching subgoal, party identity, location hypothesis,
+  uncertainty, ledger or objective signals. Configured aliases are search hints.
+  automatic_recall includes bounded historical evidence, tentative location candidates,
+  omission counts and image candidate IDs. Candidates do not establish your location
+  or supply pixels; request observation_ids to inspect them. Superseded events and
+  disputes remain fallible history. Retrieval never refreshes facts or resolves disputes.
 - ledger contains retired Pokemon, encounter areas, and recent/local events.
   Inspect correction details before relying on a superseded event.
 - recent_turns contains decisions, execution status and actual input reports.

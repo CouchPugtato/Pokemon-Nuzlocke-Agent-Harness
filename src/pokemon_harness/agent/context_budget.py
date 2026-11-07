@@ -108,7 +108,10 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
         omissions[name] = omissions.get(name, 0) + count
 
     def trim():
-        if len(selected.get("recent_turns", [])) > 1:
+        if selected.get("automatic_recall", {}).get("evidence"):
+            selected["automatic_recall"]["evidence"].pop()
+            omitted("automatic_evidence")
+        elif len(selected.get("recent_turns", [])) > 1:
             selected["recent_turns"].pop(0)
             omitted("recent_turns")
         elif selected.get("conversation", {}).get("recent"):

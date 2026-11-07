@@ -7,13 +7,14 @@ from .agent.lmstudio import InvalidModelResponse, LMStudio
 from .agent.context_budget import ContextBudgetError, calibration_key, fit_request, validate_visual_reviews
 from .memory.conversation import compaction_settings
 from .memory.archive import archive_settings, retrieve_images
+from .memory.recall import automatic_recall, recall_settings
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
 from .control.session import StopRequested
 from .control.handoff import ControlLost
 from .control.registry import read_record
 from .memory.database import Memory
-from .memory.retrieval import ledger_context, recent_turn_context, retrieve
+from .memory.retrieval import ledger_context, recent_turn_context
 from .telemetry.recorder import RunLock, save_capture, write_json
 from .telemetry.storage import StorageGuard
 from .telemetry.cleanup import cleanup_operations
@@ -245,12 +246,16 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             sequence_images = []
             print(f"Context compacted at checkpoint {checkpoint_id}; captured a fresh observation", flush=True)
         recent = memory.recent_turns(config["recent_turns"])
-        location = recent[-1]["decision"].get("location", "") if recent else ""
+        location = recent[-1]["decision"].get("location", "") if recent and not recent[-1].get("contradiction_keys") else ""
         checkpoint = memory.conversation.active_checkpoint()
         if checkpoint and "compaction" in checkpoint["payload"]:
             boundary_turn = checkpoint["payload"]["source_watermarks"]["turns"]
             recent = [turn for turn in recent[:-2] if turn["id"] > boundary_turn] + recent[-2:]
         facts, events = memory.facts(), memory.events()
+        working_state = memory.working_context()
+        recalled, recall_report = automatic_recall(facts, events, working_state, recent,
+            memory.contradictions.records(), config["objective"], observation_id,
+            config["memory_limit"], recall_settings(config))
         context = {
             "observation_id": observation_id,
             "objective": config["objective"], "rules": config["rules"],
@@ -267,8 +272,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "minimum_press_frames": config["emulator"].get("min_hold_frames", 6)
                 if config["emulator"]["backend"] in {"mgba", "vbam"} else 1,
             "timing": timing,
-            "memory": retrieve(facts, config["objective"] + " " + location,
-                               observation_id, config["memory_limit"]),
+            "memory": recalled,
+            "automatic_recall": recall_report,
             "ledger": ledger_context(events, location, config["ledger_limit"]),
             "memory_available": {
                 "latest_fact_count": len(facts), "event_count": len(events),
@@ -281,7 +286,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "memory_search_results": [dict(bundle, results=[
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
                 for record in bundle["results"]]) for bundle in search_results],
-            "working_state": memory.working_context(),
+            "working_state": working_state,
             "conversation": memory.conversation.context(),
             "contradictions": memory.contradictions.context(),
             "progress": memory.monitor_progress(),
