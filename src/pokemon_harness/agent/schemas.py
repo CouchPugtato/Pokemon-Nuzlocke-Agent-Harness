@@ -1,4 +1,4 @@
-"""One output contract for generation and application-side validation."""
+"""one output contract for generation and validation"""
 
 from jsonschema import Draft202012Validator
 
@@ -24,6 +24,32 @@ MEMORY_SEARCH_SCHEMA = obj({
     "offset": {"type": "integer", "minimum": 0, "maximum": 1000000},
     "limit": {"type": "integer", "minimum": 1, "maximum": 10},
 })
+
+EVIDENCE_IDS = {"type": "array", "items": {"type": "integer", "minimum": 1},
+                "uniqueItems": True, "maxItems": 8}
+EVIDENCE_CLAIM = obj({
+    "claim": {**text(), "minLength": 1},
+    "basis": {"type": "string", "enum": ["observed", "inferred", "unknown"]},
+    "evidence_observation_ids": EVIDENCE_IDS,
+})
+SUBGOAL_DEFINITION = obj({
+    key: {**text(), "minLength": 1}
+    for key in ("description", "objective_relation", "completion_condition", "abandonment_condition")
+})
+WORKING_STATE_UPDATE = obj({
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "location": {"anyOf": [{"type": "null"}, EVIDENCE_CLAIM]},
+    "uncertainties": {"type": "array", "maxItems": 8, "items": EVIDENCE_CLAIM},
+    "next_check": text(),
+    "subgoal_change": {"anyOf": [{"type": "null"}, obj({
+        "operation": {"type": "string", "enum": ["start", "revise", "complete", "abandon"]},
+        "id": {**text(120), "minLength": 1},
+        "definition": {"anyOf": [{"type": "null"}, SUBGOAL_DEFINITION]},
+        "reason": {**text(), "minLength": 1},
+        "evidence_observation_ids": EVIDENCE_IDS,
+    })]},
+})
+
 
 MOVE_SCHEMA = obj({
     "kind": {"type": "string", "enum": ["press", "wait"]},
@@ -51,6 +77,7 @@ DECISION_SCHEMA = obj({
     "expected_result": text(),
     "additional_actions": {"type": "array", "items": MOVE_SCHEMA, "maxItems": 19},
     "memory_search": {"anyOf": [{"type": "null"}, MEMORY_SEARCH_SCHEMA]},
+    "working_state_update": {"anyOf": [{"type": "null"}, WORKING_STATE_UPDATE]},
     "memory_updates": {"type": "array", "maxItems": 12, "items": obj({
         "category": {"type": "string", "enum": MEMORY_CATEGORIES},
         "key": {"type": "string", "minLength": 1, "maxLength": 120},
@@ -88,8 +115,8 @@ def validate_decision(value, observation_id, max_frames=60, max_sequence_length=
     if (action["kind"] == "search_memory") != (search is not None):
         raise ValueError("Only search_memory actions must supply a memory_search request")
     if search is not None:
-        if value["memory_updates"] or value["events"]:
-            raise ValueError("Memory searches are read-only; return empty memory_updates and events")
+        if value["memory_updates"] or value["events"] or value["working_state_update"] is not None:
+            raise ValueError("Memory searches are read-only; return empty memory_updates and events and null working_state_update")
         if search["category"] and search["scope"] != "facts":
             raise ValueError("A memory category filter requires scope=facts")
     for event in value["events"]:

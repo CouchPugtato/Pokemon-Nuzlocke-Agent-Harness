@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from .escalations import Escalations
+from .working_state import WorkingState
 from ..telemetry.cleanup import cleanup_operations
 
 
@@ -53,6 +54,7 @@ class Memory:
                 PRIMARY KEY(turn_id, step_index));
         """)
         self.escalations = Escalations(self.connection)
+        self.working = WorkingState(self.connection)
 
     def initialize(self, config):
         # keeping the objective and rules fixed across sessions
@@ -102,6 +104,9 @@ class Memory:
             cursor = self.connection.execute(
                 "INSERT INTO turns(observation_id,decision,status,created_at) VALUES(?,?,'planned',?)",
                 (observation_id, encode(decision), now()))
+            if decision["action"]["kind"] == "search_memory" and decision.get("working_state_update") is not None:
+                raise ValueError("Memory searches cannot change working state")
+            self.working.apply(decision.get("working_state_update"), observation_id, cursor.lastrowid)
             if decision["action"]["kind"] in {"press", "wait"}:
                 for index, action in enumerate([decision["action"], *decision.get("additional_actions", [])], 1):
                     self.connection.execute(
@@ -191,7 +196,8 @@ class Memory:
 
     def export(self):
         return {"facts": self.facts(), "events": self.events(), "recent_turns": self.recent_turns(20),
-                "cases": self.escalations.cases(), "validity": self.escalations.validity()}
+                "cases": self.escalations.cases(), "validity": self.escalations.validity(),
+                "working_state": self.working.current()}
 
     def close(self):
         self.connection.close()

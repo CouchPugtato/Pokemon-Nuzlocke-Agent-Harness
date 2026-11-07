@@ -1,4 +1,4 @@
-"""Synthetic integration demo. This does not exercise model intelligence."""
+"""synthetic integration demo without model intelligence"""
 
 import json
 
@@ -39,6 +39,7 @@ class DemoAgent:
                                 "location": "Synthetic demo", "basis": "observed", "confidence": "high", "status": "active"}],
             "events": [],
             "memory_search": None,
+            "working_state_update": None,
             "additional_actions": [],
         }
         return value, {"backend": "scripted demo", "decision": value}

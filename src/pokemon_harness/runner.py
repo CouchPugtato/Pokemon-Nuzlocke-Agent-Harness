@@ -233,6 +233,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "memory_search_results": [dict(bundle, results=[
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
                 for record in bundle["results"]]) for bundle in search_results],
+            "working_state": memory.working.current(),
             "recent_turns": recent_turn_context(recent), "recovery": recovered,
             "warning": loop_warning(memory.hashes()),
             "instruction": "Interpret the screenshots. Search memory if needed, or update evidenced facts and choose a bounded sequence of moves.",

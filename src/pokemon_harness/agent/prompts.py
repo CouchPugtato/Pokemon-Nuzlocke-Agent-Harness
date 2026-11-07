@@ -78,6 +78,9 @@ Available information:
   discover HP, moves, PP, status and supplies. Unseen values remain unknown.
 - observation_id identifies the CURRENT screenshot; echo it in every response.
 - objective is the fixed run goal; rules contains this run's Nuzlocke rules.
+- working_state is persistent structured recall with its own revision, location
+  hypothesis, uncertainties, next_check and latest subgoal. Its evidence IDs refer
+  to historical screenshots. It is fallible, including subgoal completion claims.
 - memory contains automatically selected latest facts. It is only a subset of
   saved memory. Omission does not mean a fact was deleted or never recorded.
 - ledger contains retired Pokemon, encounter areas, and recent/local events.
@@ -105,13 +108,44 @@ override permits continued input but is not newly observed evidence. Do not rewr
 uncertain events as confirmed or claim an unverifiable run is verified. Open cases
 block input until resolved through local review commands; restarting cannot clear them.
 
+Working state and subgoals:
+Return working_state_update=null when unchanged, including on search_memory.
+Otherwise supply expected_revision equal to working_state.revision, location,
+uncertainties, next_check and subgoal_change. Updates are saved atomically with
+the decision before any input; a stale revision is rejected. They survive resume
+even if the following input fails. They describe what you believe BEFORE this
+plan executes, never its predicted results. Reassess after an intervention.
+location is null for unknown or an evidence claim. uncertainties is a complete
+replacement list of up to eight evidence claims; [] explicitly clears it. Each
+claim has claim, basis (observed/inferred/unknown), evidence_observation_ids.
+Observed claims must cite the current observation; inferred claims need at least
+one available evidence ID. Unknown claims may have no evidence. Carry old claims
+as inferred or unknown when not visually refreshed; do not invent fresh evidence.
+next_check describes what to inspect next, not an accomplished action.
+subgoal_change=null preserves the current subgoal. Otherwise supply operation,
+id, definition, reason and evidence_observation_ids. Use stable specific IDs.
+start creates a new active subgoal; revise changes the matching active subgoal
+without renaming it. Both require definition with description, objective_relation,
+completion_condition and abandonment_condition. Link the subgoal to the fixed
+objective. complete and abandon require definition=null and the matching active
+ID. Completion requires the CURRENT observation among its evidence IDs and a
+reason explaining the visible completion evidence. Abandonment needs a reason.
+Complete or abandon the active subgoal before starting another. Retired IDs
+cannot be reused. All revisions remain archived; changing a goal does not erase
+failed attempts or establish progress. Do not use renamed goals to repeat loops.
+Evidence validation checks references, not whether your interpretation is true.
+The fixed objective, Nuzlocke ledger and review cases are separate authorities;
+working state cannot edit them or unblock a review case. Use memory_updates for
+durable individual facts and events for the ledger, rather than duplicating your
+whole working state as facts each turn.
+
 Storing information:
 Return memory_updates with the next press, wait or stop decision. The harness
 validates and saves them automatically before controller input. Return [] when
 nothing useful changed; do not rewrite the entire memory each turn.
 Categories:
   working: current scene/location, immediate uncertainties and temporary state.
-  objective: current subgoal, next step, and observed completion conditions.
+  objective: durable findings about progress toward the fixed objective.
   world: landmarks, exits, connections and routes actually observed or tested.
   party: identity/nickname, last inspected HP/status/moves/PP, supplies if useful.
   lesson: a concise reusable finding from an observed success or failure.

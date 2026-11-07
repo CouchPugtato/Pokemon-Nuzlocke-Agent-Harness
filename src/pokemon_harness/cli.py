@@ -151,6 +151,12 @@ def main(argv=None):
     controls.add_argument("--settle-frames", type=int, default=45)
     inspect = commands.add_parser("memory", help="Read durable facts and ledger as JSON")
     inspect.add_argument("--run-dir", required=True, type=Path)
+    state = commands.add_parser("state", help="Inspect working state and subgoal history for a stopped run")
+    state.add_argument("run_dir", nargs="?", type=Path)
+    state.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    state.add_argument("--history", action="store_true")
+    state.add_argument("--limit", type=int, default=20)
+    state.add_argument("--offset", type=int, default=0)
     cases = commands.add_parser("cases", help="Inspect durable review cases for the latest or specified run")
     cases.add_argument("run_dir", nargs="?", type=Path)
     cases.add_argument("--runs-dir", type=Path, default=Path("runs"))
@@ -195,6 +201,13 @@ def main(argv=None):
             print(json.dumps(verify_backup(args.backup_dir), indent=2))
         elif args.command == "restore":
             print(json.dumps(restore_backup(args.backup_dir, args.run_dir, args.runs_dir), indent=2))
+        elif args.command == "state":
+            directory = saved_run(args.run_dir, args.runs_dir)
+            with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
+                result = {"run_dir": str(directory), "working_state": memory.working.current()}
+                if args.history:
+                    result["history"] = memory.working.history(args.limit, args.offset)
+                print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command in {"cases", "case-open", "resolve-case"}:
             directory = saved_run(args.run_dir, args.runs_dir)
             require_live_run(directory)
