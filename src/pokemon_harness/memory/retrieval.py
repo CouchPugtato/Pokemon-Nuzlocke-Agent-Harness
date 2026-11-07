@@ -7,6 +7,31 @@ def words(value):
     return set(re.findall(r"[a-z0-9]+", value.lower()))
 
 
+def recent_turn_context(turns):
+    """Recall observations and input outcomes without feeding rationales back in.
+
+    Full decisions, rationale, and controller reports remain in SQLite and traces.
+    Predicted results and speculative rationale are deliberately not evidence.
+    """
+    result = []
+    for turn in turns:
+        decision = turn["decision"]
+        steps = []
+        for step in turn.get("steps", []):
+            execution = step.get("execution") or {}
+            item = {key: step.get(key) for key in ("step_index", "status", "observation_id")}
+            item["action"] = execution.get("effective_action", step["action"])
+            if step.get("error"):
+                item["error"] = step["error"][:200]
+            steps.append(item)
+        result.append({
+            "id": turn["id"], "observation_id": turn["observation_id"], "status": turn["status"],
+            "decision": {key: decision[key] for key in ("scene", "location", "observation")},
+            "action_kind": decision["action"]["kind"], "steps": steps,
+        })
+    return result
+
+
 def retrieve(facts, query, observation_id, limit=24):
     terms = words(query)
     active = [fact for fact in facts if fact["status"] != "resolved"]

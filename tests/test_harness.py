@@ -19,7 +19,7 @@ from pokemon_harness.emulator.interface import Capture, ReplayEmulator
 from pokemon_harness.emulator.mgba import MGBA
 from pokemon_harness.emulator.vbam import VBAM
 from pokemon_harness.memory.database import Memory
-from pokemon_harness.memory.retrieval import ledger_context, retrieve
+from pokemon_harness.memory.retrieval import ledger_context, recent_turn_context, retrieve
 from pokemon_harness.runner import run
 from pokemon_harness.telemetry.recorder import RunLock, write_json
 
@@ -321,7 +321,7 @@ class HarnessTests(unittest.TestCase):
         emulator = ReplayEmulator(create_images(self.root / "fixtures"))
         with patch("pokemon_harness.agent.lmstudio.urlopen") as request:
             request.return_value.__enter__.return_value.read.return_value = json.dumps(envelope).encode()
-            with self.assertRaisesRegex(InvalidModelResponse, "2000-token limit"):
+            with self.assertRaisesRegex(InvalidModelResponse, "requested output limit=2000"):
                 run(self.config, emulator, agent, turns=1)
         trace_path = Path(self.config["run_dir"]) / "turns" / "observation-000001.model.json"
         trace = json.loads(trace_path.read_text(encoding="utf-8"))
@@ -333,6 +333,35 @@ class HarnessTests(unittest.TestCase):
         finally:
             memory.close()
         self.assertEqual(request.call_count, 1)
+
+    def test_recent_context_excludes_speculation_but_keeps_actual_input_and_archive(self):
+        memory = self.memory()
+        value = decision()
+        value["decision_reason"] = "Unsupported speculation" * 100
+        value["expected_result"] = "Unobserved future event"
+        turn = memory.plan(1, value)
+        effective = dict(value["action"], hold_frames=6)
+        result_id = memory.observe("screenshots/two.png", "hash2", "replay")
+        memory.step_status(turn, 1, "completed", result_id, {"effective_action": effective})
+        memory.status(turn, "completed")
+        original = memory.recent_turns()
+        compact = recent_turn_context(original)
+        text = json.dumps(compact)
+        self.assertNotIn("Unsupported speculation", text)
+        self.assertNotIn("Unobserved future event", text)
+        self.assertEqual(compact[0]["steps"][0]["action"], effective)
+        self.assertEqual(compact[0]["steps"][0]["status"], "completed")
+        self.assertEqual(memory.recent_turns()[0]["decision"]["decision_reason"], value["decision_reason"])
+
+    def test_context_exhaustion_reports_real_usage_instead_of_claiming_output_limit(self):
+        envelope = {"usage": {"prompt_tokens": 7807, "completion_tokens": 385, "total_tokens": 8192},
+                    "choices": [{"finish_reason": "length", "message": {"content": "{"}}]}
+        with patch("pokemon_harness.agent.lmstudio.urlopen") as request:
+            request.return_value.__enter__.return_value.read.return_value = json.dumps(envelope).encode()
+            with self.assertRaises(InvalidModelResponse) as error:
+                LMStudio({"name": "test", "max_tokens": 8192}).decide([])
+        self.assertIn("prompt=7807, completion=385, total=8192", str(error.exception))
+        self.assertIn("loaded context", str(error.exception))
 
     def test_minimum_press_preserves_wait_duration_and_reports_actual_input(self):
         clock = SimpleNamespace(value=0.0)

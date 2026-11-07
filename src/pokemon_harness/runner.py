@@ -7,7 +7,7 @@ from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
 from .control.session import StopRequested
 from .memory.database import Memory
-from .memory.retrieval import ledger_context, retrieve
+from .memory.retrieval import ledger_context, recent_turn_context, retrieve
 from .rules.nuzlocke import unresolved_events
 from .telemetry.recorder import RunLock, save_capture, write_json
 
@@ -154,7 +154,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "memory_search_results": [dict(bundle, results=[
                 dict(record, age_observations=observation_id - record["evidence_observation_id"])
                 for record in bundle["results"]]) for bundle in search_results],
-            "recent_turns": recent, "recovery": recovered,
+            "recent_turns": recent_turn_context(recent), "recovery": recovered,
             "warning": loop_warning(memory.hashes()),
             "instruction": "Interpret the screenshots. Search memory if needed, or update evidenced facts and choose a bounded sequence of moves.",
         }

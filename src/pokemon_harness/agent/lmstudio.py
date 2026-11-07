@@ -59,8 +59,15 @@ class LMStudio:
             if finish_reason != "stop":
                 detail = f"Model did not finish a complete decision (finish_reason={finish_reason!r})"
                 if finish_reason == "length":
-                    detail += (f". Output reached the {payload['max_tokens']}-token limit; "
-                               "reasoning and decision JSON share this budget. Increase model.max_tokens")
+                    usage = envelope.get("usage") or {}
+                    detail += (f". Token usage: prompt={usage.get('prompt_tokens', 'unknown')}, "
+                               f"completion={usage.get('completion_tokens', 'unknown')}, "
+                               f"total={usage.get('total_tokens', 'unknown')}; "
+                               f"requested output limit={payload['max_tokens']}. "
+                               "The loaded context window may be full: increase LM Studio's loaded "
+                               "context length or reduce prompt/history. Reasoning and decision JSON "
+                               "share the remaining space. Increase model.max_tokens only if the "
+                               "output budget itself was exhausted")
                 raise ValueError(detail)
             value = json.loads(choice["message"]["content"])
         except (KeyError, IndexError, TypeError, ValueError) as exc:
