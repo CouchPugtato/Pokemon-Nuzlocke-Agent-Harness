@@ -8,11 +8,13 @@ from ..agent.schemas import BUTTONS
 from ..telemetry.recorder import RunLock, save_capture, write_json
 from ..telemetry.storage import StorageGuard
 from ..telemetry.cleanup import cleanup_operations
+from ..telemetry.backup import require_live_run
 
 
 def input_test(config, emulator, button, hold_frames=12, settle_frames=45):
     storage = None
     try:
+        require_live_run(config["run_dir"])
         storage = StorageGuard(config)
         storage.check()
         return _input_test(config, emulator, button, hold_frames, settle_frames, storage)

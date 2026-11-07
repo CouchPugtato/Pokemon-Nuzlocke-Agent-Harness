@@ -15,6 +15,7 @@ from .memory.retrieval import ledger_context, recent_turn_context, retrieve
 from .telemetry.recorder import RunLock, save_capture, write_json
 from .telemetry.storage import StorageGuard
 from .telemetry.cleanup import cleanup_operations
+from .telemetry.backup import require_live_run
 
 
 def run(config, emulator, agent, turns=20, control=None):
@@ -22,6 +23,7 @@ def run(config, emulator, agent, turns=20, control=None):
     try:
         if type(turns) is not int or turns < 1:
             raise ValueError("turns must be a positive integer")
+        require_live_run(config["run_dir"])
         storage = StorageGuard(config)
         storage.check()
         run_dir = Path(config["run_dir"])
@@ -37,6 +39,7 @@ def run(config, emulator, agent, turns=20, control=None):
 def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
     memory = None
     try:
+        require_live_run(run_dir)
         storage.start()
         memory = Memory(run_dir / "memory.sqlite")
         memory.initialize(config)

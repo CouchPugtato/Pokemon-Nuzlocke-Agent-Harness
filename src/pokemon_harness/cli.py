@@ -18,7 +18,8 @@ from .runner import run
 from .telemetry.recorder import RunLock, write_json
 from .telemetry.storage import StorageGuard
 from .telemetry.cleanup import closing_safely
-from .telemetry.backup import create_backup, verify_backup
+from .telemetry.backup import create_backup, verify_backup, require_live_run
+from .telemetry.restore import restore_backup
 
 
 def emulator_for(config, config_path):
@@ -39,11 +40,12 @@ def saved_run(directory, runs_dir):
     if directory is None:
         candidates = [path.parent for path in Path(runs_dir).glob("*/config.json")
                       if (path.parent / "memory.sqlite").is_file()
-                      and path.parent.name != "demo"]
+                      and path.parent.name != "demo" and not path.parent.name.startswith(".")]
         if not candidates:
             raise ValueError("No saved runs found. Start one with pokemon-harness run")
         directory = max(candidates, key=lambda path: (path / "config.json").stat().st_mtime_ns)
     directory = Path(directory).resolve()
+    require_live_run(directory)
     if not (directory / "memory.sqlite").is_file() or not (directory / "config.json").is_file():
         raise ValueError(f"No saved run at {directory}")
     return directory
@@ -55,6 +57,7 @@ def play_run(args):
     if args.command == "resume":
         directory = saved_run(args.run_dir, args.runs_dir)
         config_path = directory / "config.json"
+        require_live_run(directory)
         config = load_config(config_path)
         config["run_dir"] = str(directory)
         StorageGuard(config).check()
@@ -173,6 +176,10 @@ def main(argv=None):
     backup.add_argument("--backup-dir", type=Path, help="Backup storage directory separate from the run")
     verify = commands.add_parser("verify-backup", help="Check a backup manifest and its database evidence")
     verify.add_argument("backup_dir", type=Path)
+    restore = commands.add_parser("restore", help="Restore harness state into a new run requiring game-state review")
+    restore.add_argument("backup_dir", type=Path)
+    restore.add_argument("--run-dir", type=Path, help="New destination directory that does not already exist")
+    restore.add_argument("--runs-dir", type=Path, default=Path("runs"))
     demo = commands.add_parser("demo", help="Offline synthetic loop: no emulator or LM Studio required")
     demo.add_argument("--run-dir", type=Path, default=Path("runs/demo"))
     args = parser.parse_args(argv)
@@ -186,8 +193,11 @@ def main(argv=None):
                               "scope": "harness_state_only", "emulator_save_included": False}, indent=2))
         elif args.command == "verify-backup":
             print(json.dumps(verify_backup(args.backup_dir), indent=2))
+        elif args.command == "restore":
+            print(json.dumps(restore_backup(args.backup_dir, args.run_dir, args.runs_dir), indent=2))
         elif args.command in {"cases", "case-open", "resolve-case"}:
             directory = saved_run(args.run_dir, args.runs_dir)
+            require_live_run(directory)
             with RunLock(directory / ".lock"), closing(Memory(directory / "memory.sqlite")) as memory:
                 memory.escalations.review(memory.events())
                 if args.command == "case-open":
@@ -220,6 +230,7 @@ def main(argv=None):
                 for session in sessions:
                     print(f"{session['session_id']}  PID {session['pid']}  {session['run_dir']}")
         elif args.command == "memory":
+            require_live_run(args.run_dir)
             path = args.run_dir / "memory.sqlite"
             if not path.is_file():
                 raise ValueError(f"No run database at {path}")
@@ -231,6 +242,7 @@ def main(argv=None):
         elif args.command == "demo":
             from .demo import DemoAgent, create_images
             directory = args.run_dir.resolve()
+            require_live_run(directory)
             directory.mkdir(parents=True, exist_ok=True)
             config_path = directory / "demo-config.json"
             write_json(config_path, {"run_dir": ".", "objective": "Exercise the synthetic vision-only loop",
@@ -241,6 +253,7 @@ def main(argv=None):
         else:
             config = load_config(args.config)
             if args.command == "input-test":
+                require_live_run(config["run_dir"])
                 StorageGuard(config).check()
                 with closing_safely(emulator_for(config, args.config), "emulator") as emulator:
                     input_test(config, emulator, args.button, args.hold_frames, args.settle_frames)

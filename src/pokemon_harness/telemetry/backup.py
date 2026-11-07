@@ -21,6 +21,19 @@ EXCLUDED = {"memory.sqlite", "memory.sqlite-wal", "memory.sqlite-shm", "config.j
             ".lock", ".stop", ".session.json", ".emergency-reserve", "manifest.json"}
 
 
+def require_live_run(directory):
+    if Path(directory).name.startswith((".restore-", ".backup-")):
+        raise ValueError("Incomplete snapshot staging directories cannot be used as live runs")
+    path = Path(directory) / "manifest.json"
+    if path.is_file():
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            raise ValueError("Run manifest cannot be read; inspect the directory before continuing") from None
+        if isinstance(manifest, dict) and manifest.get("scope") == "harness_state_only":
+            raise ValueError("Backup snapshots cannot be used as live runs. Use pokemon-harness restore")
+
+
 def _linked(path):
     return path.is_symlink() or bool(getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0) & 0x400)
 
@@ -116,17 +129,18 @@ def verify_backup(directory):
             "scope": "harness_state_only", "verified": True}
 
 
-def _discard_stage(stage, parent):
+def _discard_stage(stage, parent, prefix=".backup-"):
     # checking the exact staging target before recursive cleanup
-    if (stage.parent.resolve() != parent.resolve() or stage.resolve().parent != parent.resolve()
-            or not stage.name.startswith(".backup-") or stage.is_symlink()):
-        raise ValueError("Refusing cleanup outside the backup staging directory")
+    if (prefix not in {".backup-", ".restore-"} or stage.parent.resolve() != parent.resolve()
+            or stage.resolve().parent != parent.resolve() or not stage.name.startswith(prefix) or stage.is_symlink()):
+        raise ValueError("Refusing cleanup outside the snapshot staging directory")
     if stage.exists():
         shutil.rmtree(stage)
 
 
 def create_backup(run_dir, backup_dir=None):
     source = Path(run_dir).resolve()
+    require_live_run(source)
     if not (source / "memory.sqlite").is_file() or not (source / "config.json").is_file():
         raise ValueError("No saved run at the requested backup source")
     root = Path(backup_dir).resolve() if backup_dir is not None else source.parent / ".backups"
