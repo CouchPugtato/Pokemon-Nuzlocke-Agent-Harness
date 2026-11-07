@@ -6,3 +6,12 @@ runs/
 build/
 dist/
 .pytest_cache/
+
+# Generated local run configurations and default diagnostic capture
+/configs/first-gym-*.json
+/capture.png
+
+# Local environment settings
+.env
+.env.*
+!.env.example

@@ -1,12 +1,15 @@
 import argparse
 import json
 import sys
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 from .agent.lmstudio import LMStudio
 from .config import load_config
 from .agent.schemas import BUTTONS
 from .control.diagnostics import input_test
+from .control.session import RunControl, request_stop
 from .emulator.interface import ReplayEmulator
 from .memory.database import Memory
 from .runner import run
@@ -27,13 +30,71 @@ def emulator_for(config, config_path):
     raise ValueError("emulator.backend must be mgba, vbam, or replay")
 
 
+def saved_run(directory, runs_dir):
+    if directory is None:
+        candidates = [path.parent for path in Path(runs_dir).glob("*/config.json")
+                      if (path.parent / "memory.sqlite").is_file()
+                      and path.parent.name != "demo"]
+        if not candidates:
+            raise ValueError("No saved runs found. Start one with pokemon-harness run")
+        directory = max(candidates, key=lambda path: (path / "config.json").stat().st_mtime_ns)
+    directory = Path(directory).resolve()
+    if not (directory / "memory.sqlite").is_file() or not (directory / "config.json").is_file():
+        raise ValueError(f"No saved run at {directory}")
+    return directory
+
+
+def play_run(args):
+    if args.turns < 1:
+        raise ValueError("turns must be a positive integer")
+    if args.command == "resume":
+        directory = saved_run(args.run_dir, args.runs_dir)
+        config_path = directory / "config.json"
+        config = load_config(config_path)
+        config["run_dir"] = str(directory)
+    else:
+        config_path = args.config
+        config = load_config(config_path)
+        if args.goal == "first-gym":
+            config["objective"] = ("Beat the first Gym Leader in Pokemon Emerald and obtain the Stone Badge "
+                                   "while following the Nuzlocke rules. Stop once the badge is visibly "
+                                   "confirmed, or if the entire usable party faints.")
+        elif args.objective:
+            config["objective"] = args.objective
+        name = datetime.now().strftime("emerald-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        directory = (args.run_dir or (args.runs_dir / name)).resolve()
+        if directory.exists() and any(directory.iterdir()):
+            raise ValueError("New run directory must be empty. Use pokemon-harness resume to continue a run")
+        config["run_dir"] = str(directory)
+        if config["emulator"]["backend"] == "replay":
+            config["emulator"]["screenshots_dir"] = str(
+                (config_path.resolve().parent / config["emulator"]["screenshots_dir"]).resolve())
+    agent = LMStudio(config["model"])
+    emulator = emulator_for(config, config_path)
+    print(f"Run: {directory}\nObjective: {config['objective']}", flush=True)
+    print("Stop: F8, Ctrl+C, or pokemon-harness stop in another terminal. Emulator keeps running.", flush=True)
+    print(json.dumps(run(config, emulator, agent, args.turns, control=RunControl(directory))))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Screenshot-only Pokemon agent harness")
     commands = parser.add_subparsers(dest="command", required=True)
-    play = commands.add_parser("run", help="Run bounded model turns; reuse run_dir to resume")
-    play.add_argument("--config", required=True, type=Path)
-    play.add_argument("--turns", type=int, default=20,
+    play = commands.add_parser("run", help="Start a fresh run using configs/emerald.json by default")
+    play.add_argument("--config", type=Path, default=Path("configs/emerald.json"))
+    play.add_argument("--run-dir", type=Path, help="Optional empty directory for the new run")
+    play.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    goal = play.add_mutually_exclusive_group()
+    goal.add_argument("--goal", choices=["first-gym"], help="Use a predefined objective")
+    goal.add_argument("--objective", help="Override the new run's objective")
+    play.add_argument("--turns", type=int, default=500,
                       help="Maximum model plans; each can contain multiple controller moves")
+    resume = commands.add_parser("resume", help="Resume the latest run, or a specified run directory")
+    resume.add_argument("run_dir", nargs="?", type=Path)
+    resume.add_argument("--runs-dir", type=Path, default=Path("runs"))
+    resume.add_argument("--turns", type=int, default=500)
+    stop = commands.add_parser("stop", aliases=["pause"], help="Stop the latest harness without pausing the emulator")
+    stop.add_argument("run_dir", nargs="?", type=Path)
+    stop.add_argument("--runs-dir", type=Path, default=Path("runs"))
     capture = commands.add_parser("capture", help="Save a live screenshot to verify cropping and bindings")
     capture.add_argument("--config", required=True, type=Path)
     capture.add_argument("--output", type=Path, default=Path("capture.png"))
@@ -48,7 +109,13 @@ def main(argv=None):
     demo.add_argument("--run-dir", type=Path, default=Path("runs/demo"))
     args = parser.parse_args(argv)
     try:
-        if args.command == "memory":
+        if args.command in {"run", "resume"}:
+            play_run(args)
+        elif args.command in {"stop", "pause"}:
+            directory = saved_run(args.run_dir, args.runs_dir)
+            request_stop(directory)
+            print(f"Stop requested for {directory}. The current move may finish; no further moves will start.")
+        elif args.command == "memory":
             path = args.run_dir / "memory.sqlite"
             if not path.is_file():
                 raise ValueError(f"No run database at {path}")
@@ -69,12 +136,7 @@ def main(argv=None):
             print(json.dumps(run(config, emulator, DemoAgent(), turns=3)))
         else:
             config = load_config(args.config)
-            if args.command == "run":
-                # Validate model selection before opening the emulator backend.
-                agent = LMStudio(config["model"])
-                emulator = emulator_for(config, args.config)
-                print(json.dumps(run(config, emulator, agent, args.turns)))
-            elif args.command == "input-test":
+            if args.command == "input-test":
                 emulator = emulator_for(config, args.config)
                 input_test(config, emulator, args.button, args.hold_frames, args.settle_frames)
             else:

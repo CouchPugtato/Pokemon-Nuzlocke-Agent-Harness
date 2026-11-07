@@ -2,15 +2,17 @@ from pathlib import Path
 import time
 
 from .agent.prompts import messages
+from .agent.lmstudio import InvalidModelResponse
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
+from .control.session import StopRequested
 from .memory.database import Memory
 from .memory.retrieval import ledger_context, retrieve
 from .rules.nuzlocke import unresolved_events
 from .telemetry.recorder import RunLock, save_capture, write_json
 
 
-def run(config, emulator, agent, turns=20):
+def run(config, emulator, agent, turns=20, control=None):
     if type(turns) is not int or turns < 1:
         raise ValueError("turns must be a positive integer")
     run_dir = Path(config["run_dir"])
@@ -19,12 +21,23 @@ def run(config, emulator, agent, turns=20):
         memory = Memory(run_dir / "memory.sqlite")
         try:
             memory.initialize(config)
+            if control:
+                control.start()
             write_json(run_dir / "config.json", config)
             recovered = memory.recover()
             if recovered:
                 memory.note("recovery", recovered)
-            return _loop(config, emulator, agent, turns, memory, run_dir, recovered)
+            try:
+                return _loop(config, emulator, agent, turns, memory, run_dir, recovered, control)
+            except (StopRequested, KeyboardInterrupt):
+                if control is None:
+                    raise
+                memory.note("user_stop", {"message": "Harness stopped; emulator continues running"})
+                print("Harness stopped. Memory saved; emulator keeps running. Use pokemon-harness resume.")
+                return {"reason": "user_stop"}
         finally:
+            if control:
+                control.close()
             try:
                 emulator.close()
             finally:
@@ -32,16 +45,20 @@ def run(config, emulator, agent, turns=20):
                 memory.close()
 
 
-def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
+def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None):
     previous = memory.previous_observation()
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
     current_image, observation_id, timing = _capture(memory, run_dir, emulator)
     completed = 0
     sequence_images = []
     for _ in range(turns):
+        if control:
+            control.check()
         decision, current_image, previous_image, observation_id, timing = _choose_decision(
             config, emulator, agent, memory, run_dir, current_image, previous_image,
-            observation_id, timing, recovered, sequence_images)
+            observation_id, timing, recovered, sequence_images, control)
+        if control:
+            control.check()
         try:
             turn_id = memory.plan(observation_id, decision)
         except Exception as exc:
@@ -63,10 +80,16 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
         sequence_images = []
         try:
             for index, action in enumerate(actions, 1):
+                if control:
+                    control.check()
                 if index > 1:
                     # All buttons are already released. This extra delay is in
                     # addition to the previous move's settle/capture overhead.
-                    time.sleep(config.get("sequence_delay_ms", 250) / 1000)
+                    delay = config.get("sequence_delay_ms", 250) / 1000
+                    if control:
+                        control.wait(delay)
+                    else:
+                        time.sleep(delay)
                 memory.step_status(turn_id, index, "executing")
                 execution = emulator.execute(action)
                 result_image, result_id, result_timing = _capture(memory, run_dir, emulator)
@@ -83,6 +106,9 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered):
                 previous_image, current_image, observation_id = current_image, result_image, result_id
                 timing = result_timing
             memory.status(turn_id, "completed")
+        except StopRequested:
+            memory.status(turn_id, "stopped", "User stopped before the next move")
+            raise
         except BaseException as exc:
             memory.status(turn_id, "unknown", str(exc) or type(exc).__name__)
             raise
@@ -98,7 +124,7 @@ def _capture(memory, run_dir, emulator):
 
 
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
-                     previous_image, observation_id, timing, recovered, sequence_images=None):
+                     previous_image, observation_id, timing, recovered, sequence_images=None, control=None):
     """Read-only searches do not execute inputs or consume controller turns."""
     budget = config.get("memory_search_rounds", 3)
     search_results = []
@@ -139,7 +165,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
         try:
             print(f"Observation {observation_id}: requesting model decision "
                   f"(timeout {config['model'].get('timeout_seconds', 180)}s)...", flush=True)
-            decision, trace = agent.decide(messages(context, current_image, previous_image, sequence_images))
+            request = messages(context, current_image, previous_image, sequence_images)
+            decision, trace = control.decide(agent, request) if control else agent.decide(request)
             write_json(prefix.with_suffix(".model.json"), trace)
             validate_decision(decision, observation_id, config["max_action_frames"],
                               config.get("max_sequence_length", 5))
@@ -155,5 +182,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             previous_image = current_image
             current_image, observation_id, timing = _capture(memory, run_dir, emulator)
         except Exception as exc:
+            if isinstance(exc, InvalidModelResponse):
+                write_json(prefix.with_suffix(".model.json"), exc.trace)
             memory.note("decision_error", {"observation_id": observation_id, "error": str(exc)})
             raise

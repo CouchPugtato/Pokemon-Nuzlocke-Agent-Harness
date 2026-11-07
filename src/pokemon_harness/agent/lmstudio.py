@@ -9,6 +9,12 @@ from urllib.request import Request, urlopen
 from .schemas import DECISION_SCHEMA
 
 
+class InvalidModelResponse(ValueError):
+    def __init__(self, message, trace):
+        super().__init__(message)
+        self.trace = trace
+
+
 class LMStudio:
     def __init__(self, config):
         self.config = config
@@ -20,7 +26,7 @@ class LMStudio:
         payload = {
             "model": self.config["name"], "messages": messages,
             "temperature": self.config.get("temperature", 0.1),
-            "max_tokens": self.config.get("max_tokens", 2000), "stream": False,
+            "max_tokens": self.config.get("max_tokens", 8192), "stream": False,
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "game_decision", "strict": True, "schema": DECISION_SCHEMA}},
         }
@@ -43,15 +49,22 @@ class LMStudio:
                 raise TimeoutError(f"LM Studio connection timed out after {timeout}s. "
                                    "No controller input was sent for this observation.") from exc
             raise
+        settings = {key: value for key, value in payload.items() if key != "messages"}
+        trace = {"raw_response": raw, "request_settings": settings}
         try:
             envelope = json.loads(raw)
+            trace = {"response": envelope, "request_settings": settings}
             choice = envelope["choices"][0]
-            if choice.get("finish_reason") != "stop":
-                raise ValueError("Model did not finish a complete decision")
+            finish_reason = choice.get("finish_reason")
+            if finish_reason != "stop":
+                detail = f"Model did not finish a complete decision (finish_reason={finish_reason!r})"
+                if finish_reason == "length":
+                    detail += (f". Output reached the {payload['max_tokens']}-token limit; "
+                               "reasoning and decision JSON share this budget. Increase model.max_tokens")
+                raise ValueError(detail)
             value = json.loads(choice["message"]["content"])
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid LM Studio response: {exc}") from exc
+            raise InvalidModelResponse(f"Invalid LM Studio response: {exc}", trace) from exc
         # Screenshots already live in the observation archive; do not duplicate
         # base64 images in every trace file.
-        settings = {key: value for key, value in payload.items() if key != "messages"}
-        return value, {"response": envelope, "request_settings": settings}
+        return value, trace

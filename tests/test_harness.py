@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from jsonschema.exceptions import ValidationError
 
-from pokemon_harness.agent.lmstudio import LMStudio
+from pokemon_harness.agent.lmstudio import InvalidModelResponse, LMStudio
 from pokemon_harness.agent.prompts import messages
 from pokemon_harness.agent.schemas import validate_decision
 from pokemon_harness.config import load_config
@@ -313,6 +313,25 @@ class HarnessTests(unittest.TestCase):
         with patch("pokemon_harness.agent.lmstudio.urlopen", side_effect=TimeoutError("timed out")) as request:
             with self.assertRaisesRegex(TimeoutError, "LM Studio.*180s"):
                 agent.decide(messages({"observation_id": 1}, b"fake-png"))
+        self.assertEqual(request.call_count, 1)
+
+    def test_truncated_model_response_is_archived_without_input(self):
+        envelope = {"choices": [{"finish_reason": "length", "message": {"content": "{"}}]}
+        agent = LMStudio({"name": "test", "max_tokens": 2000})
+        emulator = ReplayEmulator(create_images(self.root / "fixtures"))
+        with patch("pokemon_harness.agent.lmstudio.urlopen") as request:
+            request.return_value.__enter__.return_value.read.return_value = json.dumps(envelope).encode()
+            with self.assertRaisesRegex(InvalidModelResponse, "2000-token limit"):
+                run(self.config, emulator, agent, turns=1)
+        trace_path = Path(self.config["run_dir"]) / "turns" / "observation-000001.model.json"
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        self.assertEqual(trace["response"], envelope)
+        self.assertNotIn("messages", trace["request_settings"])
+        memory = Memory(Path(self.config["run_dir"]) / "memory.sqlite")
+        try:
+            self.assertEqual(memory.recent_turns(10), [])
+        finally:
+            memory.close()
         self.assertEqual(request.call_count, 1)
 
     def test_minimum_press_preserves_wait_duration_and_reports_actual_input(self):
