@@ -10,6 +10,7 @@ from .memory.archive import archive_settings, retrieve_images
 from .memory.recall import automatic_recall, recall_settings
 from .agent.schemas import MEMORY_CATEGORIES, validate_decision
 from .control.loop_detection import loop_warning
+from .control.capture import capture_settings, settled_capture, capture_age
 from .control.session import StopRequested
 from .control.handoff import ControlLost
 from .control.registry import read_record
@@ -100,7 +101,7 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
 def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None, storage=None):
     previous = memory.previous_observation()
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
-    current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
+    current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control)
     memory.monitor_progress()
     review = memory.escalations.review(memory.events())
     if review["blocked_cases"]:
@@ -164,8 +165,20 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
                 if control:
                     control.check()
                 memory.step_status(turn_id, index, "executing")
+                input_age = capture_age(memory.capture_metadata(observation_id))
+                decision_age = capture_age(memory.capture_metadata(decision["observation_id"]))
+                input_started = time.monotonic()
                 execution = emulator.execute(action)
-                result_image, result_id, result_timing = _capture(memory, run_dir, emulator, storage)
+                execution = dict(execution or {}, observation_age_at_input_seconds=input_age,
+                                 preceding_observation_id=observation_id, decision_observation_id=decision["observation_id"],
+                                 decision_observation_age_at_input_seconds=decision_age,
+                                 harness_elapsed_seconds=time.monotonic() - input_started)
+                result_image, result_id, result_timing = _capture(memory, run_dir, emulator, storage, config, control,
+                    decision["scene"], {"effective_action": execution.get("effective_action", action),
+                                       "elapsed_seconds": execution["harness_elapsed_seconds"],
+                                       "decision_observation_id": decision["observation_id"],
+                                       "decision_observation_age_at_input_seconds": decision_age,
+                                       "observation_age_at_input_seconds": input_age})
                 memory.note("action_result", {"turn_id": turn_id, "observation_id": result_id,
                                               "execution": execution, "step_index": index,
                                               "sequence_length": len(actions)})
@@ -206,14 +219,15 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
     return {"completed_actions": completed, "reason": "turn_limit"}
 
 
-def _capture(memory, run_dir, emulator, storage=None):
+def _capture(memory, run_dir, emulator, storage=None, config=None, control=None, scene="unknown", after_input=None):
     if storage:
         storage.check()
-    capture = emulator.capture()
+    capture, metadata = settled_capture(emulator, capture_settings(config or {}), control, scene)
+    metadata["after_input"] = after_input
     if storage:
         storage.check(len(capture.image))
     path, digest = save_capture(run_dir, capture)
-    observation_id = memory.observe(path, digest, capture.timing, capture.image)
+    observation_id = memory.observe(path, digest, capture.timing, capture.image, metadata)
     return capture.image, observation_id, capture.timing
 
 
@@ -242,7 +256,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             checkpoint_id = memory.save_checkpoint(compaction=settings)
             compacted = True
             previous_image = current_image
-            current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
+            current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control)
             sequence_images = []
             print(f"Context compacted at checkpoint {checkpoint_id}; captured a fresh observation", flush=True)
         recent = memory.recent_turns(config["recent_turns"])
@@ -310,6 +324,11 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             existing_ids = {frame["observation_id"] for frame in outcome_images}
             outcome_images.extend(frame for frame in archive_images if frame["observation_id"] not in existing_ids)
             context["requested_archive_observation_ids"] = [frame["observation_id"] for frame in archive_images]
+            capture_metadata = memory.capture_metadata(observation_id)
+            if capture_metadata:
+                context["observation_capture"] = {key: capture_metadata[key] for key in (
+                    "status", "samples", "elapsed_ms", "captured_at", "deadline_exceeded", "scene_hint")}
+                context["observation_capture"]["age_seconds_at_request_build"] = capture_age(capture_metadata)
             factor = memory.budgets.factor(key)
             loaded_context = agent.loaded_context_length if isinstance(agent, LMStudio) else None
             context, request, report = fit_request(context, model_settings, current_image, previous_image,
@@ -346,7 +365,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                 review_count += 1
                 print("Outcome review saved; no controller input sent", flush=True)
                 previous_image = current_image
-                current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
+                current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control, decision["scene"])
                 continue
             if kind != "search_memory":
                 return decision, current_image, previous_image, observation_id, timing, request_id
@@ -362,7 +381,7 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             search_results.append(result)
             print(f"Memory search: {result['total_matches']} matches; returning {len(result['results'])} records", flush=True)
             previous_image = current_image
-            current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage)
+            current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control, decision["scene"])
         except Exception as exc:
             if storage:
                 cleanup_operations([("emergency reserve", storage.release_reserve)], exc)

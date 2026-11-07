@@ -158,7 +158,8 @@ class HandoffTests(unittest.TestCase):
         memory = Memory(self.directory / "memory.sqlite")
         try:
             self.assertEqual([step["status"] for step in memory.recent_turns()[0]["steps"]],
-                             ["completed", "cancelled"])
+                             ["unknown", "cancelled"])
+            self.assertIsNone(memory.recent_turns()[0]["steps"][0]["observation_id"])
         finally:
             memory.close()
 

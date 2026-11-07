@@ -40,6 +40,8 @@ class Memory:
             CREATE TABLE IF NOT EXISTS observations(
                 id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, image_path TEXT NOT NULL,
                 image_hash TEXT NOT NULL, timing TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS observation_capture(
+                observation_id INTEGER PRIMARY KEY REFERENCES observations(id), payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS turns(
                 id INTEGER PRIMARY KEY, observation_id INTEGER NOT NULL UNIQUE REFERENCES observations(id),
                 decision TEXT NOT NULL, status TEXT NOT NULL, error TEXT,
@@ -77,7 +79,7 @@ class Memory:
             self.connection.execute("INSERT OR IGNORE INTO metadata VALUES('identity', ?)", (encode(identity),))
             self.progress.configure(config)
 
-    def observe(self, path, digest, timing, image=None):
+    def observe(self, path, digest, timing, image=None, capture_metadata=None):
         features = image_features(image) if image is not None else None
         with self.connection:
             cursor = self.connection.execute(
@@ -85,8 +87,14 @@ class Memory:
                 (now(), str(path), digest, timing))
             if features is not None:
                 self.connection.execute("INSERT INTO observation_features VALUES(?,?)", (cursor.lastrowid, encode(features)))
+            if capture_metadata is not None:
+                self.connection.execute("INSERT INTO observation_capture VALUES(?,?)", (cursor.lastrowid, encode(capture_metadata)))
             self.conversation.append("observation", {"image_hash": digest, "timing": timing}, cursor.lastrowid)
         return cursor.lastrowid
+
+    def capture_metadata(self, observation_id):
+        row = self.connection.execute("SELECT payload FROM observation_capture WHERE observation_id=?", (observation_id,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def recover(self):
         """avoiding replay of uncertain actions"""

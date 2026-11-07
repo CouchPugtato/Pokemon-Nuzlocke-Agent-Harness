@@ -8,6 +8,24 @@
   "memory_limit": 24,
   "ledger_limit": 24,
   "memory_search_rounds": 3,
+  "capture_settling": {
+    "enabled": true,
+    "min_delay_ms": 50,
+    "interval_ms": 75,
+    "max_ms": 750,
+    "max_samples": 8,
+    "stable_comparisons": 2,
+    "difference_threshold": 1.0,
+    "masks": [],
+    "scene_max_ms": {
+      "battle": 250,
+      "dialogue": 250,
+      "menu": 250,
+      "overworld": 350,
+      "unknown": 350,
+      "transition": 600
+    }
+  },
   "automatic_recall": {
     "evidence_limit": 6,
     "location_limit": 3,

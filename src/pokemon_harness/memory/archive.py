@@ -35,6 +35,10 @@ def retrieve_images(memory, run_dir, observation_ids, current_id, settings, prev
         record = {"observation_id": source_id, "captured_at": row["created_at"],
                   "image_hash": row["image_hash"], "historical_only": True,
                   "age_observations_at_retrieval": current_id - source_id, "capture_timing": row["timing"]}
+        metadata = memory.capture_metadata(source_id)
+        record["capture_metadata"] = ({key: metadata[key] for key in (
+            "status", "samples", "captured_at", "elapsed_ms", "deadline_exceeded", "scene_hint", "after_input")}
+            if metadata else None)
         path = (root / row["image_path"]).resolve()
         if not path.is_relative_to(root):
             raise ValueError("Archived observation image path escapes the run directory")

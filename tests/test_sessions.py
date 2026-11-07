@@ -75,7 +75,8 @@ class SessionTests(unittest.TestCase):
         memory = Memory(directory / "memory.sqlite")
         try:
             steps = memory.recent_turns()[0]["steps"]
-            self.assertEqual([step["status"] for step in steps], ["completed", "cancelled"])
+            self.assertEqual([step["status"] for step in steps], ["unknown", "cancelled"])
+            self.assertIsNone(steps[0]["observation_id"])
             before = memory.previous_observation()["id"]
         finally:
             memory.close()

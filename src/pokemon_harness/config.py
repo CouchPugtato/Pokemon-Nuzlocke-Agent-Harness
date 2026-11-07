@@ -8,6 +8,7 @@ from .agent.context_budget import budget_settings
 from .memory.conversation import compaction_settings
 from .memory.archive import archive_settings
 from .memory.recall import recall_settings
+from .control.capture import capture_settings
 
 
 def load_config(path):
@@ -32,6 +33,7 @@ def load_config(path):
     value["compaction"] = compaction_settings(value)
     value["archive_retrieval"] = archive_settings(value)
     value["automatic_recall"] = recall_settings(value)
+    value["capture_settling"] = capture_settings(value)
     value.setdefault("max_action_frames", 60)
     value.setdefault("max_sequence_length", 5)
     value.setdefault("sequence_delay_ms", 250)
