@@ -66,6 +66,7 @@ class Memory:
         self.working = WorkingState(self.connection)
         self.outcomes = Outcomes(self.connection)
         self.progress = Progress(self.connection, self.outcomes)
+        self.escalations.progress = self.progress
         self.contradictions = Contradictions(self.connection, self.escalations)
         self.budgets = BudgetCalibration(self.connection)
         self.conversation = Conversation(self.connection)
@@ -174,6 +175,16 @@ class Memory:
             if request_id is not None:
                 self.conversation.complete_readonly(request_id, observation_id, "review_completed",
                                                     {"reviews": reviews})
+
+    def resolve_progress_case(self, case_id, explanation, observation_id, reviews):
+        if type(observation_id) is not int or observation_id < 1 or not isinstance(reviews, list) or len(reviews) != 1:
+            raise ValueError("Progress resolution requires one review and its observation ID")
+        with self.connection:
+            self.outcomes.apply(reviews, observation_id)
+            evidence = sorted({observation_id, *(step[key] for step in reviews[0]["steps"]
+                for key in ("before_observation_id", "after_observation_id"))})
+            self.escalations.resolve_in_transaction(case_id, "evidence", explanation, evidence)
+            self.progress.refresh()
 
     def begin_request(self, request, observation_id, report, model):
         with self.connection:

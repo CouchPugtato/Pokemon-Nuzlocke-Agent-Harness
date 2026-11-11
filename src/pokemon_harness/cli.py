@@ -229,6 +229,8 @@ def main(argv=None):
     resolve.add_argument("--reason", required=True)
     resolve.add_argument("--observation-id", action="append", type=int, default=[])
     resolve.add_argument("--correction-key", default="")
+    resolve.add_argument("--review-file", type=Path,
+                         help="JSON observation_id and outcome_reviews for evidence resolution of a false progress stall")
     resolve.add_argument("--allow-continue", action="store_true",
                          help="Explicitly continue an unverifiable run without changing the event ledger")
     backup = commands.add_parser("backup", help="Snapshot a stopped run with its memory and evidence")
@@ -332,8 +334,18 @@ def main(argv=None):
                     memory.escalations.open("manual:" + uuid.uuid4().hex, args.reason, args.observation_id,
                                             {"source": "user"})
                 elif args.command == "resolve-case":
-                    memory.escalations.resolve(args.case_id, args.outcome, args.reason, args.observation_id,
-                                               args.correction_key, args.allow_continue)
+                    if args.review_file:
+                        if args.outcome != "evidence" or args.correction_key or args.allow_continue or args.observation_id:
+                            raise ValueError("A review file requires outcome=evidence and supplies its own screenshot IDs")
+                        if args.review_file.stat().st_size > 65536:
+                            raise ValueError("Review file exceeds the supported size")
+                        review = json.loads(args.review_file.read_text(encoding="utf-8"))
+                        if not isinstance(review, dict) or set(review) != {"observation_id", "outcome_reviews"}:
+                            raise ValueError("Review file requires observation_id and outcome_reviews")
+                        memory.resolve_progress_case(args.case_id, args.reason, review["observation_id"], review["outcome_reviews"])
+                    else:
+                        memory.escalations.resolve(args.case_id, args.outcome, args.reason, args.observation_id,
+                                                   args.correction_key, args.allow_continue)
                 records = memory.escalations.cases()
                 if args.command == "cases" and args.case is not None:
                     records = [case for case in records if case["id"] == args.case]

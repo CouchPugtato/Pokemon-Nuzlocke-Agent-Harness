@@ -311,6 +311,81 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(current["requires_recovery"])
         self.assertEqual(self.memory.escalations.validity(), "unverifiable")
 
+    def stopped_review(self, digest="different"):
+        self.stalled()
+        self.attempt("B")
+        self.attempt("START", digest)
+        state = self.finish_review()
+        source = self.memory.outcomes.history()[0]
+        review = {"turn_id": source["turn_id"], "expected_revision": source["revision"],
+                  "steps": copy.deepcopy(source["steps"])}
+        review["steps"][0].update(assessment="progress_observed", explanation="The next dialogue line is visible")
+        return state["case_id"], source["reviewed_observation_id"], review
+
+    def test_progress_case_can_be_resolved_with_revised_evidence_without_override(self):
+        case, observation, review = self.stopped_review()
+        events = self.memory.events()
+        self.memory.resolve_progress_case(case, "Reviewed changed dialogue", observation, [review])
+        state = self.memory.monitor_progress()
+        self.assertEqual(state["mode"], "recovered")
+        self.assertEqual(state["recovery_attempts_used"], 2)
+        self.assertEqual(self.memory.escalations.validity(), "supported")
+        self.assertFalse(self.memory.escalations.cases()[0]["blocking"])
+        self.assertEqual(self.memory.events(), events)
+        self.assertEqual(self.memory.outcomes.latest(review["turn_id"])["revision"], 2)
+        self.assertEqual(self.memory.outcomes.history()[1]["steps"][0]["assessment"], "uncertain")
+
+    def test_progress_resolution_rolls_back_review_without_changed_evidence(self):
+        case, observation, review = self.stopped_review("same")
+        before = self.memory.outcomes.history()
+        with self.assertRaisesRegex(ValueError, "reviewed advancement"):
+            self.memory.resolve_progress_case(case, "Unsupported claim", observation, [review])
+        self.assertEqual(self.memory.outcomes.history(), before)
+        self.assertTrue(self.memory.escalations.cases()[0]["blocking"])
+        self.assertEqual(self.memory.monitor_progress()["mode"], "stopped")
+
+    def test_progress_evidence_requires_all_linked_screenshots(self):
+        case, observation, review = self.stopped_review()
+        self.memory.review_outcomes(observation, [review])
+        with self.assertRaisesRegex(ValueError, "before and after screenshots"):
+            self.memory.escalations.resolve(case, "evidence", "Incomplete evidence", [observation])
+        with self.assertRaisesRegex(ValueError, "no ledger correction or override"):
+            self.memory.escalations.resolve(case, "evidence", "Not an override", [observation], allow_continue=True)
+
+    def test_progress_resolution_cli_reads_review_file(self):
+        case, observation, review = self.stopped_review()
+        config = self.root / "config.json"
+        write_json(config, self.config)
+        review_path = self.root / "review.json"
+        write_json(review_path, {"observation_id": observation, "outcome_reviews": [review]})
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = main(["resolve-case", str(case), str(self.root), "--outcome", "evidence",
+                           "--reason", "Reviewed dialogue", "--review-file", str(review_path)])
+        self.assertEqual(result, 0)
+        self.assertEqual(self.memory.monitor_progress()["mode"], "recovered")
+
+    def test_progress_resolution_cannot_clear_a_different_case(self):
+        case, observation, review = self.stopped_review()
+        episode = self.memory.monitor_progress()["episode_id"]
+        other = self.memory.escalations.open("different", "Another case", details={
+            "kind": "stalled_progress", "episode_id": episode})
+        with self.assertRaisesRegex(ValueError, "stopped episode"):
+            self.memory.resolve_progress_case(other, "Wrong case", observation, [review])
+        self.assertEqual(self.memory.outcomes.latest(review["turn_id"])["revision"], 1)
+        self.assertTrue(next(value for value in self.memory.escalations.cases() if value["id"] == case)["blocking"])
+
+    def test_progress_resolution_rejects_remaining_exact_visual_cycle(self):
+        case, observation, review = self.stopped_review()
+        with self.memory.connection:
+            self.memory.connection.execute("""
+                UPDATE observations SET image_hash='cycle'
+                WHERE id IN (SELECT observation_id FROM action_steps ORDER BY turn_id DESC LIMIT 3)
+            """)
+        with self.assertRaisesRegex(ValueError, "remaining visual cycle"):
+            self.memory.resolve_progress_case(case, "Unresolved cycle", observation, [review])
+        self.assertEqual(self.memory.outcomes.latest(review["turn_id"])["revision"], 1)
+        self.assertTrue(self.memory.escalations.cases()[0]["blocking"])
+
     def test_policy_is_validated_and_cannot_reset_an_existing_run(self):
         for supplied in ({"max_recovery_attempts": 0}, {"window": 8}, {"cycle_repetitions": True}, {"disable": True}):
             with self.subTest(supplied=supplied), self.assertRaises(ValueError):

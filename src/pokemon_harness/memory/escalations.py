@@ -81,6 +81,10 @@ class Escalations:
         return "supported"
 
     def resolve(self, case_id, outcome, explanation, evidence_ids=(), correction_key="", allow_continue=False):
+        with self.connection:
+            return self.resolve_in_transaction(case_id, outcome, explanation, evidence_ids, correction_key, allow_continue)
+
+    def resolve_in_transaction(self, case_id, outcome, explanation, evidence_ids=(), correction_key="", allow_continue=False):
         if outcome not in {"evidence", "user-assertion", "unverifiable", "invalid"}:
             raise ValueError("Unknown resolution outcome")
         if not isinstance(explanation, str) or not explanation.strip() or len(explanation) > 2000:
@@ -91,7 +95,9 @@ class Escalations:
         evidence = self._evidence(evidence_ids)
         if outcome == "invalid" and allow_continue:
             raise ValueError("An invalid run cannot be authorized to continue")
-        if outcome == "evidence":
+        if outcome == "evidence" and case["details"].get("kind") == "stalled_progress":
+            self._progress_evidence(case, evidence, correction_key, allow_continue)
+        elif outcome == "evidence":
             row = self.connection.execute("SELECT * FROM events WHERE key=?", (correction_key,)).fetchone()
             event = json.loads(row["payload"]) if row else {}
             corrected = {json.loads(value[0])["corrects_event_key"] for value in
@@ -106,12 +112,38 @@ class Escalations:
         elif correction_key:
             raise ValueError("Only evidence resolutions may reference a ledger correction")
         # preserving assertions without upgrading them to observed facts
-        with self.connection:
-            cursor = self.connection.execute(
-                "INSERT INTO case_resolutions(case_id,outcome,explanation,evidence_ids,correction_key,"
-                "allow_continue,created_at) VALUES(?,?,?,?,?,?,?)",
-                (case_id, outcome, explanation, json.dumps(evidence), correction_key, int(allow_continue), timestamp()))
+        cursor = self.connection.execute(
+            "INSERT INTO case_resolutions(case_id,outcome,explanation,evidence_ids,correction_key,"
+            "allow_continue,created_at) VALUES(?,?,?,?,?,?,?)",
+            (case_id, outcome, explanation, json.dumps(evidence), correction_key, int(allow_continue), timestamp()))
         return cursor.lastrowid
+
+    def _progress_evidence(self, case, evidence, correction_key, allow_continue):
+        episode_id = case["details"].get("episode_id")
+        episode = self.connection.execute("SELECT * FROM progress_episodes WHERE id=?", (episode_id,)).fetchone()
+        if (correction_key or allow_continue or not episode or episode["case_id"] != case["id"]
+                or episode["status"] != "stopped" or not hasattr(self, "progress")):
+            raise ValueError("Progress evidence requires the stopped episode and no ledger correction or override")
+        state = self.progress.refresh()
+        row = self.connection.execute("""
+            SELECT r.* FROM outcome_reviews r JOIN recovery_attempts a ON a.turn_id=r.target_turn_id
+            WHERE a.episode_id=? ORDER BY r.target_turn_id DESC,r.revision DESC LIMIT 1
+        """, (episode_id,)).fetchone()
+        latest = self.connection.execute(
+            "SELECT MAX(turn_id) FROM action_steps WHERE status IN ('completed','executing','unknown')").fetchone()[0]
+        if (not row or row["target_turn_id"] <= episode["start_turn_id"] or state["no_progress_attempts"]
+                or row["target_turn_id"] != latest
+                or self.progress.outcomes.pending_count() or state["episode_id"] != episode_id
+                or any(signal["kind"] in {"exact_visual", "similar_visual"} for signal in state["signals"])):
+            raise ValueError("Progress evidence requires reviewed advancement from this episode with no remaining visual cycle or backlog")
+        review = json.loads(row["payload"])
+        for step in review["steps"]:
+            ids = {step["before_observation_id"], step["after_observation_id"], row["observation_id"]}
+            hashes = self.connection.execute("SELECT image_hash FROM observations WHERE id IN (?,?)",
+                (step["before_observation_id"], step["after_observation_id"])).fetchall()
+            if step["assessment"] == "progress_observed" and ids.issubset(evidence) and len({value[0] for value in hashes}) == 2:
+                return
+        raise ValueError("Progress evidence must include the latest recovery review and its before and after screenshots")
 
     def sync_events(self, events):
         uncertain = set(unresolved_events(events))

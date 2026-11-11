@@ -143,7 +143,11 @@ class Progress:
             resolution = self.connection.execute(
                 "SELECT outcome,allow_continue FROM case_resolutions WHERE case_id=? ORDER BY id DESC LIMIT 1",
                 (episode["case_id"],)).fetchone()
-            if resolution and resolution[0] != "invalid" and resolution[1]:
+            if resolution and resolution[0] == "evidence" and last_progress > episode["start_turn_id"] and not triggers:
+                self.connection.execute("UPDATE progress_episodes SET status='recovered' WHERE id=?", (episode["id"],))
+                self._event(episode["id"], "recovered", {"case_id": episode["case_id"], "evidence_turn_id": last_progress})
+                episode = self.connection.execute("SELECT * FROM progress_episodes WHERE id=?", (episode["id"],)).fetchone()
+            elif resolution and resolution[0] != "invalid" and resolution[1]:
                 self.connection.execute("UPDATE progress_episodes SET status='overridden' WHERE id=?", (episode["id"],))
                 self._event(episode["id"], "user_override", {"case_id": episode["case_id"]})
                 episode = None
