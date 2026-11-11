@@ -76,6 +76,22 @@ class ReviewSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validator.validate(value)
 
+    def test_supplied_delayed_endpoint_is_preferred_to_an_early_capture(self):
+        state = context()
+        state["outcome_review"]["next_plan"]["steps"][0]["review_after_observation_ids"] = [6, 7]
+        value = review(state)
+        validator = Draft202012Validator(schema_for_context(state))
+        self.assertFalse(validator.is_valid(value))
+        value["outcome_reviews"][0]["steps"][0].update(after_observation_id=7, assessment="progress_observed")
+        validator.validate(value)
+        state["outcome_visual_evidence_ids"] = [5, 7]
+        Draft202012Validator(schema_for_context(state)).validate(value)
+        from pokemon_harness.agent.context_budget import validate_visual_reviews
+        from pokemon_harness.evaluation import validate_context_gates
+
+        validate_visual_reviews(value, state)
+        validate_context_gates(value, state)
+
     def test_normal_phase_keeps_the_original_schema_and_does_not_mutate_it(self):
         before = copy.deepcopy(DECISION_SCHEMA)
         schema_for_context(context())

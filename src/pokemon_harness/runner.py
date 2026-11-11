@@ -106,6 +106,7 @@ def _run_locked(config, emulator, agent, turns, control, run_dir, storage):
 
 
 def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=None, storage=None, runtime=None):
+    memory.note("session_start", {"reason": "New control session requires fresh outcome attribution"})
     previous = memory.previous_observation()
     previous_image = (run_dir / previous["image_path"]).read_bytes() if previous else None
     current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control)

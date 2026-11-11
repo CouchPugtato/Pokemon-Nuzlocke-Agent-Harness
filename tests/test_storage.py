@@ -155,7 +155,14 @@ class StorageTests(unittest.TestCase):
             write_json(path, value)
 
         errors = io.StringIO()
-        with patch.object(Memory, "note", side_effect=OSError("Secondary note failure")), \
+        original_note = Memory.note
+
+        def fail_cleanup_notes(memory, kind, value):
+            if kind == "session_start":
+                return original_note(memory, kind, value)
+            raise OSError("Secondary note failure")
+
+        with patch.object(Memory, "note", autospec=True, side_effect=fail_cleanup_notes), \
                 patch("pokemon_harness.runner.write_json", side_effect=failing_export), \
                 contextlib.redirect_stderr(errors), self.assertRaises(ValueError) as failure:
             run(self.config, emulator, agent, turns=1,

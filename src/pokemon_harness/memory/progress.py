@@ -84,15 +84,17 @@ class Progress:
                                                     (step["after_observation_id"],)).fetchone()
                     progress |= bool(before and after and before[0] != after[0])
             actions = []
+            reviewed = {step["step_index"]: step for step in review["steps"]} if review else {}
             for step in plan["steps"]:
                 if step["input_status"] not in {"completed", "executing", "unknown"}:
                     continue
                 actions.append(step["action"])
+                after_id = reviewed.get(step["step_index"], step)["after_observation_id"]
                 row = self.connection.execute("""
                     SELECT o.image_hash,f.payload FROM observations o LEFT JOIN observation_features f
                     ON f.observation_id=o.id WHERE o.id=?
-                """, (step["after_observation_id"],)).fetchone()
-                frames.append({"observation_id": step["after_observation_id"],
+                """, (after_id,)).fetchone()
+                frames.append({"observation_id": after_id,
                                "turn_id": turn[0],
                                "image_hash": row[0] if row else None,
                                "features": json.loads(row[1]) if row and row[1] else None,

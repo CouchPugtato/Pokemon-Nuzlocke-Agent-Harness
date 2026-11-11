@@ -1,7 +1,7 @@
 """evidence linked reviews of attempted controller plans"""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from jsonschema import Draft202012Validator
 
@@ -56,7 +56,7 @@ class Outcomes:
         return [self._decode(row) for row in self.connection.execute(
             "SELECT * FROM outcome_reviews ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset))]
 
-    def plan_context(self, turn_id):
+    def plan_context(self, turn_id, observation_id=None):
         turn = self.connection.execute("SELECT * FROM turns WHERE id=?", (turn_id,)).fetchone()
         if turn is None:
             raise ValueError("Outcome review references a missing turn")
@@ -74,6 +74,23 @@ class Outcomes:
             if row["observation_id"] is not None:
                 before = row["observation_id"]
         latest = self.latest(turn_id)
+        current = self.connection.execute("SELECT * FROM observations WHERE id=?", (observation_id,)).fetchone() if observation_id else self.connection.execute(
+            "SELECT * FROM observations ORDER BY id DESC LIMIT 1").fetchone()
+        attempted = [step for step in steps if step["input_status"] in ATTEMPTED]
+        if attempted:
+            final = attempted[-1]
+            captured = self.connection.execute("SELECT * FROM observations WHERE id=?", (final["after_observation_id"],)).fetchone()
+            intervened = self.connection.execute(
+                "SELECT 1 FROM turns WHERE id>? AND observation_id<=? LIMIT 1",
+                (turn_id, current["id"] if current else 0)).fetchone()
+            interrupted = self.connection.execute(
+                "SELECT 1 FROM notes WHERE kind IN ('session_start','control_handoff','resume_after_handoff','user_stop','recovery') "
+                "AND created_at>=? AND created_at<=? LIMIT 1",
+                (turn["created_at"], current["created_at"] if current else turn["created_at"])).fetchone()
+            if (turn["status"] == "completed" and final["input_status"] == "completed" and captured and current
+                    and captured["id"] <= current["id"] and not intervened and not interrupted
+                    and timedelta(0) <= datetime.fromisoformat(current["created_at"]) - datetime.fromisoformat(captured["created_at"]) <= timedelta(seconds=600)):
+                final["review_after_observation_ids"] = sorted({captured["id"], current["id"]})
         conflicts = [row[0] for row in self.connection.execute(
             "SELECT key FROM working_invalidations WHERE revision=?", (intent["working_revision"],))] if intent else []
         subgoal = json.loads(intent["subgoal"]) if intent else None
@@ -99,7 +116,7 @@ class Outcomes:
             raise ValueError("Review at most one plan per decision")
         for review in reviews:
             Draft202012Validator(OUTCOME_REVIEW).validate(review)
-            plan = self.plan_context(review["turn_id"])
+            plan = self.plan_context(review["turn_id"], observation_id)
             if review["expected_revision"] != plan["expected_revision"]:
                 raise ValueError("Outcome review refers to a stale revision")
             attempted = {step["step_index"]: step for step in plan["steps"] if step["input_status"] in ATTEMPTED}
@@ -114,8 +131,9 @@ class Outcomes:
                 if not before < after <= observation_id or not self.connection.execute(
                         "SELECT 1 FROM observations WHERE id=?", (after,)).fetchone():
                     raise ValueError("Outcome review requires available later observation evidence")
-                if source["after_observation_id"] is not None and after != source["after_observation_id"]:
-                    raise ValueError("Outcome review must cite the recorded step result")
+                if source["after_observation_id"] is not None and after not in source.get(
+                        "review_after_observation_ids", [source["after_observation_id"]]):
+                    raise ValueError("Outcome review must cite the recorded step result or an uninterrupted delayed result")
                 if source["after_observation_id"] is None and step["assessment"] != "uncertain":
                     raise ValueError("Missing step capture requires an uncertain outcome")
                 if source["after_observation_id"] is None and after != observation_id:

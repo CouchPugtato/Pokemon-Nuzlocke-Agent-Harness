@@ -101,7 +101,8 @@ def validate_context_gates(decision, context):
             for step in review["steps"]:
                 source = attempted[step["step_index"]]
                 after = source["after_observation_id"] or context["observation_id"]
-                if step["before_observation_id"] != source["before_observation_id"] or step["after_observation_id"] != after:
+                allowed = source.get("review_after_observation_ids", [after])
+                if step["before_observation_id"] != source["before_observation_id"] or step["after_observation_id"] not in allowed:
                     raise ValueError("Proposal review uses the wrong archived observation evidence")
                 if source["after_observation_id"] is None and step["assessment"] != "uncertain":
                     raise ValueError("Proposal claims a result for an uncaptured input")

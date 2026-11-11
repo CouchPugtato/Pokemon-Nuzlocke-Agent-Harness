@@ -260,12 +260,19 @@ Stop remains available without reviews and never pretends unreviewed plans succe
 Each review needs turn_id, expected_revision from next_plan, and steps containing
 exactly one entry per attempted step (input_status completed/executing/unknown).
 Omit planned or cancelled steps. Each entry needs step_index, before_observation_id,
-after_observation_id, assessment and explanation. Copy the recorded before/after IDs
-from next_plan.steps. If after is null, use the current observation and uncertain;
+after_observation_id, assessment and explanation. Copy the recorded before ID.
+If review_after_observation_ids is present, use its latest supplied screenshot as
+the after ID. These are bounded delayed results for the final completed move with
+no intervening controller plan, session change or handoff. Compare its visible
+content with the before image even if the immediate capture was still rendering.
+Otherwise copy the recorded after ID. If after is null, use the current observation and uncertain;
 missing step capture cannot establish an outcome attributable to that input.
 Use assessment=progress_observed only for concrete advancement toward the subgoal
 and objective, no_progress_observed for evidence of no relevant advancement, or
 uncertain for insufficient/contradictory evidence. Give a brief visual explanation.
+New dialogue content reached by a confirmation press is relevant advancement through
+that conversation. Do not call it no progress because an earlier capture was partial.
+Text finishing the same existing line alone is not evidence of a successful input.
 Compare the labeled outcome evidence screenshots. Expected_result_prediction is
 only the OLD prediction to test; subgoal_at_input is the goal when inputs were
 planned. A changed pixel, advancing text animation, or reopening an interaction
@@ -398,7 +405,8 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
         content.append({"type": "text", "text": (
             "READ ONLY REVIEW PHASE: Review outcome_review.next_plan now using action.kind=review_outcomes. "
             "The response schema permits only this review or stop. Controller inputs are unavailable in this phase. "
-            "Review each attempted step using its recorded before/after observation IDs and revision. "
+            "Review each attempted step using its recorded before ID and revision. For a delayed result use the latest "
+            "supplied review_after_observation_ids endpoint when present, otherwise its recorded after ID. "
             "Use uncertain when evidence is missing or ambiguous. Return no memory, event, dependency or working state writes, "
             "and strategy=null, recovery_plan=null. A fresh screenshot and new decision follow the saved review.")})
     elif context.get("progress", {}).get("requires_recovery"):

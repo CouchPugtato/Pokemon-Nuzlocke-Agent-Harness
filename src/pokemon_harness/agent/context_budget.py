@@ -37,7 +37,7 @@ def budget_settings(model):
 
 def calibration_key(model):
     payload = {"name": model["name"], "base_url": model.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/"),
-               "policy": budget_settings(model), "schema": DECISION_SCHEMA, "schema_policy": "bounded_phase_v2"}
+               "policy": budget_settings(model), "schema": DECISION_SCHEMA, "schema_policy": "bounded_phase_v3"}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 

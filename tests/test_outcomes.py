@@ -158,7 +158,7 @@ class OutcomeTests(unittest.TestCase):
         self.attempted()
         observation, reviews = self.review()
         for key, value in (("before_observation_id", 2), ("after_observation_id", 999),
-                           ("after_observation_id", observation), ("after_observation_id", 1)):
+                           ("after_observation_id", 1)):
             invalid = copy.deepcopy(reviews)
             invalid[0]["steps"][0][key] = value
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
@@ -168,6 +168,76 @@ class OutcomeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing turn"):
             self.memory.review_outcomes(observation, invalid)
         self.assertEqual(self.memory.outcomes.history(), [])
+
+    def test_delayed_result_can_confirm_progress_without_rewriting_capture(self):
+        turn = self.attempted()
+        self.memory.connection.execute("UPDATE observations SET image_hash='before' WHERE id=2")
+        self.memory.connection.commit()
+        observation, reviews = self.review()
+        plan = self.memory.outcomes.context()["next_plan"]
+        self.assertEqual(plan["steps"][0]["review_after_observation_ids"], [2, observation])
+        reviews[0]["steps"][0].update(after_observation_id=observation, assessment="progress_observed",
+                                       explanation="The later screenshot shows the next dialogue line")
+        self.memory.review_outcomes(observation, reviews)
+        self.assertEqual(self.memory.outcomes.plan_context(turn)["steps"][0]["after_observation_id"], 2)
+        self.assertEqual(self.memory.outcomes.latest(turn)["steps"][0]["after_observation_id"], observation)
+        self.assertEqual(self.memory.monitor_progress()["no_progress_attempts"], 0)
+        self.assertEqual(self.memory.progress._samples(8)[1][-1]["observation_id"], observation)
+
+    def test_only_final_completed_step_can_use_delayed_result(self):
+        value = decision(1)
+        value["additional_actions"] = [dict(value["action"])]
+        turn = self.memory.plan(1, value)
+        for index in (1, 2):
+            after = self.memory.observe("after.png", str(index), "test")
+            self.memory.step_status(turn, index, "completed", after)
+        self.memory.status(turn, "completed")
+        observation, reviews = self.review()
+        steps = self.memory.outcomes.plan_context(turn)["steps"]
+        self.assertNotIn("review_after_observation_ids", steps[0])
+        self.assertEqual(steps[1]["review_after_observation_ids"], [3, observation])
+        reviews[0]["steps"][0]["after_observation_id"] = observation
+        with self.assertRaisesRegex(ValueError, "recorded step result"):
+            self.memory.review_outcomes(observation, reviews)
+
+    def test_historical_delayed_result_is_not_invalidated_by_future_plans(self):
+        turn = self.attempted()
+        observation, reviews = self.review()
+        self.memory.review_outcomes(observation, reviews)
+        future = self.memory.observe("future.png", "future", "test")
+        next_turn = self.memory.plan(future, decision(future))
+        self.memory.status(next_turn, "blocked")
+        self.assertEqual(self.memory.outcomes.plan_context(turn, observation)["steps"][0][
+            "review_after_observation_ids"], [2, observation])
+        self.assertNotIn("review_after_observation_ids", self.memory.outcomes.plan_context(turn, future)["steps"][0])
+
+    def test_delayed_result_is_not_attributed_across_session_or_handoff(self):
+        self.attempted()
+        observation, reviews = self.review()
+        for kind in ("session_start", "control_handoff", "user_stop", "recovery"):
+            with self.subTest(kind=kind):
+                self.memory.note(kind, {})
+                observation = self.memory.observe("fresh.png", "fresh", "test")
+                reviews[0]["steps"][0]["after_observation_id"] = observation
+                with self.assertRaisesRegex(ValueError, "recorded step result"):
+                    self.memory.review_outcomes(observation, reviews)
+                self.memory.connection.execute("DELETE FROM notes WHERE kind=?", (kind,))
+                self.memory.connection.commit()
+
+    def test_delayed_result_cannot_cross_another_plan_or_time_limit(self):
+        turn = self.attempted()
+        observation, reviews = self.review()
+        self.memory.connection.execute("UPDATE observations SET created_at='2099-01-01T00:00:00+00:00' WHERE id=?", (observation,))
+        self.assertNotIn("review_after_observation_ids", self.memory.outcomes.plan_context(turn)["steps"][0])
+        self.memory.connection.execute("UPDATE observations SET created_at=(SELECT created_at FROM observations WHERE id=2) WHERE id=?", (observation,))
+        self.memory.review_outcomes(observation, reviews)
+        value = decision(observation)
+        next_turn = self.memory.plan(observation, value)
+        self.memory.status(next_turn, "stopped")
+        reviews[0]["expected_revision"] = 1
+        reviews[0]["steps"][0]["after_observation_id"] = observation
+        with self.assertRaisesRegex(ValueError, "recorded step result"):
+            self.memory.review_outcomes(observation, reviews)
 
     def test_uncaptured_step_review_requires_a_fresh_reconciliation_observation(self):
         self.attempted(unknown=True)

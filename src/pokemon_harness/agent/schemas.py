@@ -238,10 +238,15 @@ def schema_for_context(context):
     step_fields = item["properties"]["steps"]["items"]["properties"]
     step_fields["step_index"]["enum"] = [step["step_index"] for step in steps]
     step_fields["before_observation_id"]["enum"] = sorted({step["before_observation_id"] for step in steps})
-    step_fields["after_observation_id"]["enum"] = sorted({step["after_observation_id"] or context["observation_id"] for step in steps})
     visible = context.get("outcome_visual_evidence_ids")
+    endpoints = []
+    for step in steps:
+        candidates = step.get("review_after_observation_ids", [step["after_observation_id"] or context["observation_id"]])
+        supplied = [value for value in candidates if visible is None or value in visible]
+        endpoints.append(max(supplied or candidates))
+    step_fields["after_observation_id"]["enum"] = sorted(set(endpoints))
     if visible is not None and any(step["after_observation_id"] is None or not {
-            step["before_observation_id"], step["after_observation_id"]}.issubset(visible) for step in steps):
+            step["before_observation_id"], after}.issubset(visible) for step, after in zip(steps, endpoints)):
         step_fields["assessment"]["enum"] = ["uncertain"]
     fields["outcome_reviews"]["minItems"] = 1
     stop = copy.deepcopy(review)
