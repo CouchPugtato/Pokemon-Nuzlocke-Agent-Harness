@@ -28,6 +28,20 @@ def review(value):
 
 
 class ReviewSchemaTests(unittest.TestCase):
+    def test_review_prompt_keeps_evidence_rules_without_unavailable_write_instructions(self):
+        state = context()
+        review_prompt = messages(state, b"png")[0]["content"]
+        normal_prompt = messages({"observation_id": 7, "outcome_review": {"pending_count": 0}}, b"png")[0]["content"]
+        self.assertIn("Reviewing action outcomes:", review_prompt)
+        self.assertIn("outcome_visual_evidence_ids", review_prompt)
+        self.assertIn("before and after evidence must be present", review_prompt)
+        self.assertIn("do not attribute changes across a session change", review_prompt)
+        self.assertNotIn("Dependencies and contradictions:", review_prompt)
+        self.assertNotIn("Working state and subgoals:", review_prompt)
+        self.assertIn("Dependencies and contradictions:", normal_prompt)
+        self.assertIn("Reviewing action outcomes:", normal_prompt)
+        self.assertLess(len(review_prompt), len(normal_prompt) * 0.6)
+
     def test_current_observation_is_bound_in_action_review_recovery_and_stop_phases(self):
         from test_recovery_schema import context as recovery_context, decision as recovery_decision
 

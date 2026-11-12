@@ -16,6 +16,10 @@ model request or controller plan. It does not discard the comparison needed to
 review an attempted input. Visual similarity checks include local changes across
 the screen, including upper name fields as well as dialogue text.
 
+Read-only reviews use a focused evidence guide. Normal action decisions retain the
+complete memory and planning guide. Both phases preserve the configured output
+reserve, safety margin, screenshot requirements and strict response schema.
+
 A false progress stall can instead be resolved from a revised outcome review:
 
 ```powershell

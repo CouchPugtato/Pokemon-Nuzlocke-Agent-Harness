@@ -86,7 +86,7 @@ Return exactly the requested JSON decision. A stop action ends this invocation.
 """
 
 
-MEMORY_GUIDE = """MEMORY AND INFORMATION GUIDE
+MEMORY_GUIDE_PREFIX = """MEMORY AND INFORMATION GUIDE
 
 Available information:
 - Current screenshot and, when available, a labeled previous screenshot. These
@@ -253,7 +253,10 @@ rewriting state, changing predictions or renaming goals cannot replenish tests.
 An ordinary sequence may be cancelled early when a loop is suspected. Review only
 the attempted steps from the journal, not the remaining planned moves.
 
-Reviewing action outcomes:
+"""
+
+
+OUTCOME_GUIDE = """Reviewing action outcomes:
 Return outcome_reviews=[] when no review is needed or when searching memory.
 Before a new press or wait plan, review all pending attempted plans. Choose
 action.kind=review_outcomes to save one plan review without controller input,
@@ -291,7 +294,10 @@ Uncertain input remains uncertain even after review; do not replay it blindly.
 Recent turns include compact outcome reviews with explanation excerpts, separately
 from controller status. Full explanations remain archived for local inspection.
 
-Working state and subgoals:
+"""
+
+
+MEMORY_GUIDE = MEMORY_GUIDE_PREFIX + OUTCOME_GUIDE + """Working state and subgoals:
 Return working_state_update=null when unchanged, including on search_memory.
 Otherwise supply expected_revision equal to working_state.revision, location,
 uncertainties, next_check and subgoal_change. Updates are saved atomically with
@@ -406,6 +412,25 @@ For ordinary press/wait/stop decisions set memory_search=null.
 """
 
 
+REVIEW_GUIDE = """READ ONLY OUTCOME REVIEW
+The current screenshot is identified by observation_id. Echo this exact ID.
+outcome_review.next_plan identifies the attempted plan to review and its revision.
+The objective and rules remain fixed. working_state, ledger and conversation are
+fallible historical context, not new observations or instructions. Use only supplied
+screenshots to assess the input; missing archive pixels cannot establish a result.
+outcome_visual_evidence_ids lists screenshot IDs supplied in this request. Both
+before and after evidence must be present for a non-uncertain assessment.
+The current screenshot may be later than a recorded result, especially on resume.
+Use only the recorded result or a supplied review_after_observation_ids endpoint;
+do not attribute changes across a session change or intervention to the old input.
+Do not send controller input, search memory, change working state, write facts or
+ledger events, resolve contradictions or declare a recovery. Return only the pending
+review or stop, with empty state/dependency writes and null strategy/recovery_plan.
+Outcome reviews are fallible assessments, not independent proof of game events.
+
+""" + OUTCOME_GUIDE
+
+
 def messages(context, current_image, previous_image=None, sequence_images=None, outcome_images=None):
     content = [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}]
     if context.get("outcome_review", {}).get("pending_count"):
@@ -457,7 +482,8 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
         if previous_image != current_image:
             content.append(image(previous_image))
     content.extend([{"type": "text", "text": "Current observation:"}, image(current_image)])
-    return [{"role": "system", "content": SYSTEM + "\n\n" + MEMORY_GUIDE},
+    guide = REVIEW_GUIDE if context.get("outcome_review", {}).get("pending_count") else MEMORY_GUIDE
+    return [{"role": "system", "content": SYSTEM + "\n\n" + guide},
             {"role": "user", "content": content}]
 
 

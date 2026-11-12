@@ -37,6 +37,22 @@ def context():
 
 
 class ContextBudgetTests(unittest.TestCase):
+    def test_resumed_review_fits_before_after_and_current_images_with_reserved_output(self):
+        state = context()
+        state["observation_id"] = 83
+        state["outcome_review"] = {"pending_count": 1, "next_plan": {
+            "turn_id": 34, "expected_revision": 0, "steps": [{"step_index": 1,
+                "input_status": "completed", "before_observation_id": 80,
+                "after_observation_id": 81}]}}
+        frames = [{"observation_id": i, "image": data, "purpose": "outcome"}
+                  for i, data in ((80, b"before"), (81, b"after"))]
+        selected, _, report = fit_request(state, self.model, b"resumed current", outcome_images=frames)
+        self.assertEqual(selected["outcome_visual_evidence_ids"], [80, 81, 83])
+        self.assertEqual(report["image_count"], 3)
+        self.assertEqual(report["output_reserve_tokens"], 8192)
+        self.assertEqual(report["safety_margin_tokens"], 4096)
+        self.assertGreaterEqual(report["effective_output_tokens"], 8192)
+
     def test_pending_review_keeps_before_and_latest_delayed_endpoint(self):
         state = context()
         state["outcome_review"] = {"pending_count": 1, "next_plan": {
