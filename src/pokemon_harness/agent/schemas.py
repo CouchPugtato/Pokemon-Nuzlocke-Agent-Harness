@@ -215,6 +215,14 @@ def recovery_schema(context):
 
 
 def schema_for_context(context):
+    schema = phase_schema(context)
+    if schema is not DECISION_SCHEMA and "observation_id" in context:
+        for branch in schema.get("anyOf", [schema]):
+            branch["properties"]["observation_id"]["enum"] = [context["observation_id"]]
+    return schema
+
+
+def phase_schema(context):
     pending = context.get("outcome_review", {})
     if not pending.get("pending_count"):
         if context.get("progress", {}).get("requires_recovery"):

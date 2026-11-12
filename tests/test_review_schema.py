@@ -28,6 +28,36 @@ def review(value):
 
 
 class ReviewSchemaTests(unittest.TestCase):
+    def test_current_observation_is_bound_in_action_review_recovery_and_stop_phases(self):
+        from test_recovery_schema import context as recovery_context, decision as recovery_decision
+
+        normal = {"observation_id": 23, "outcome_review": {"pending_count": 0, "next_plan": None}}
+        recovery = recovery_context()
+        fixtures = [(normal, DemoAgent().decide(messages(normal, b"png"))[0]),
+                    (context(), review(context())), (recovery, recovery_decision(recovery))]
+        before = copy.deepcopy(DECISION_SCHEMA)
+        for state, value in fixtures:
+            validator = Draft202012Validator(schema_for_context(state))
+            validator.validate(value)
+            value["observation_id"] += 1
+            self.assertFalse(validator.is_valid(value))
+            value.update(strategy=None, recovery_plan=None, outcome_reviews=[])
+            value["action"].update(kind="stop", buttons=[], hold_frames=1, settle_frames=0)
+            self.assertFalse(validator.is_valid(value))
+            value["observation_id"] = state["observation_id"]
+            validator.validate(value)
+        self.assertEqual(DECISION_SCHEMA, before)
+
+    def test_client_rejects_a_server_that_ignores_the_current_observation_binding(self):
+        state = context()
+        value = review(state)
+        value["observation_id"] += 1
+        response = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(value)}}]}).encode()
+        with patch("pokemon_harness.agent.lmstudio.urlopen", return_value=io.BytesIO(response)):
+            with self.assertRaises(InvalidModelResponse) as error:
+                LMStudio({"name": "fixture"}).decide(messages(state, b"png"))
+        self.assertIn("response", error.exception.trace)
+
     def test_action_phase_excludes_unrequested_review_revisions(self):
         state = {"observation_id": 23, "outcome_review": {"pending_count": 0, "next_plan": None}}
         before = copy.deepcopy(DECISION_SCHEMA)
