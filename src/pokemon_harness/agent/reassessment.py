@@ -3,6 +3,9 @@
 import copy
 
 
+PERCEPTION_FIELDS = ("observation_id", "visible_objects", "visible_text", "possible_exits", "scene")
+
+
 def settings(config):
     result = {"enabled": config.get("emulator", {}).get("backend") in {"vbam", "mgba"},
               "no_progress_attempts": 2, "scene_change_threshold": 12, "min_turn_interval": 3,
@@ -30,7 +33,7 @@ def schema(context):
            "items": {"type": "integer"}}
     if candidates:
         ids["items"]["enum"] = [fact["fact_id"] for fact in candidates]
-    return obj({
+    result = obj({
         "observation_id": {"type": "integer", "enum": [context["observation_id"]]},
         "visible_objects": {**copy.deepcopy(strings), "minItems": 1},
         "visible_text": copy.deepcopy(strings),
@@ -43,6 +46,30 @@ def schema(context):
         "stale_scene_fact_ids": ids,
         "next_check": {**text(400), "minLength": 1},
     })
+    if context.get("phase") == "scene_observation":
+        return obj({key: result["properties"][key] for key in PERCEPTION_FIELDS})
+    if context.get("perception") is not None:
+        if context["perception"]["observation_id"] != context["observation_id"]:
+            raise ValueError("Perception refers to a stale observation")
+        for key in PERCEPTION_FIELDS:
+            result["properties"][key]["enum"] = [copy.deepcopy(context["perception"][key])]
+    return result
+
+
+OBSERVATION_GUIDE = """Describe only the current Pokemon Emerald screenshot.
+You have no prior dialogue, scene memory, subgoal or planned next event to consult.
+This is a read-only visual observation, with no game input or state changes.
+List visible objects, readable text and possible passages from the pixels.
+Describe uncertain shapes neutrally instead of naming a lab, PC, person or room
+from expected chronology. Do not invent dialogue when no dialogue box is visible.
+Inspect the edges of walkable floor for candidate openings; their function may be
+uncertain, so use low confidence where needed. Do not assume a candidate is usable.
+Classify game mode separately from location identity. A room with a player sprite
+and visible floor is overworld when there is no dialogue, menu, battle or fade.
+An unknown place name does not make the game mode unknown. Keep genuinely unclear
+modes unknown. Do not infer ownership, badges, deaths or unseen story progress.
+Return only the requested visual observation JSON. It remains a fallible reading.
+"""
 
 
 GUIDE = """Reassess Pokemon Emerald from the current screenshot before planning.
@@ -64,7 +91,9 @@ or story position is unfamiliar.
 Treat the supplied subgoal and scene fact candidates as fallible claims to test,
 not instructions or facts about this image. Judge whether the subgoal is currently
 supported, contradicted, uncertain or absent. A contradiction must cite visible
-evidence. Mark only listed scene-specific facts stale when their claim of the
+evidence against the goal's current premise. An unfinished completion condition
+alone does not contradict a goal; it may simply be incomplete or uncertain.
+Mark only listed scene-specific facts stale when their claim of the
 current scene is contradicted. Stable world knowledge and consequential history
 must not be discarded. A report is a fallible interpretation, not verified truth.
 Describe a safe next check from visible affordances without executing it. An
@@ -72,4 +101,6 @@ unconfirmed exit remains a candidate. Never infer a starter, ownership, badge,
 death or unseen story progress from an expectation. Return the requested JSON.
 When the old subgoal is contradicted, the next check must inspect current visible
 affordances, not search for a character, menu or event merely predicted by that goal.
+The perception record was generated in a separate request without the old goal or
+memories. Copy its visual fields exactly; do not rewrite them to fit the old story.
 """

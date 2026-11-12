@@ -6,11 +6,19 @@ episode or a periodic turn limit. `scene_reassessment` in the configuration cont
 the thresholds and minimum interval. Replay runs default to disabled; tests can
 enable it explicitly.
 
-The perception request contains the current screenshot, fixed objective and rules,
-the old subgoal as a claim to test, and a bounded set of scene-specific memory
-candidates. It does not include the old dialogue narrative or controller plans.
-The report describes visible objects, readable text, possible exits, subgoal support
-and a safe next check. Candidate exits and all model interpretations remain fallible.
+Reassessment uses two separate model requests. The first receives only the current
+screenshot and its ID, without the old goal, scene memories, objective or dialogue
+history. It describes visible objects, readable text, possible exits and game mode.
+The second receives that observation, the screenshot, fixed objective and rules,
+the old subgoal as a claim to test, and bounded scene-specific memory candidates.
+Its schema locks the original visual fields, including game mode and candidate
+exits. It can assess subgoal support and suggest a next check, but cannot rewrite
+the visual observation to fit the old story. Missing completion proof alone does
+not contradict a goal. Candidate exits and all interpretations remain fallible.
+
+Each request has its own archived context and model trace and uses the existing
+generation, session and stop checks. Nothing is committed to scene memory until
+both validated requests succeed. Failure in either stage stops before game input.
 
 Reports and traces are saved separately from controller decisions. Scene reports
 survive restart and compaction. Contradicted scene facts are marked stale, while

@@ -259,11 +259,8 @@ def _reassess_scene(config, agent, memory, run_dir, current_image, observation_i
         "scene_fact_candidates": memory.scenes.candidates(memory.facts())}
     model = agent.config if isinstance(agent, LMStudio) else config["model"]
     length = agent.loaded_context_length if isinstance(agent, LMStudio) else None
-    context, request, budget = fit_request(context, model, current_image, context_length=length,
-        factor=agent.budget_factor if isinstance(agent, LMStudio) else 1.0)
     prefix = run_dir / "turns" / f"reassessment-{observation_id:06d}"
     prefix.parent.mkdir(exist_ok=True)
-    write_json(prefix.with_suffix(".context.json"), context)
     print(f"Observation {observation_id}: read-only scene reassessment ({reason})...", flush=True)
 
     def check():
@@ -272,20 +269,31 @@ def _reassess_scene(config, agent, memory, run_dir, current_image, observation_i
         if runtime:
             runtime.check()
 
-    check()
-    try:
-        report, trace = bounded_decision(agent, request,
-            runtime.policy["generation_seconds"] if runtime else config["model"].get("timeout_seconds", 600), check)
+    def generate(payload, suffix=""):
+        check()
+        selected, request, _ = fit_request(payload, model, current_image, context_length=length,
+            factor=agent.budget_factor if isinstance(agent, LMStudio) else 1.0)
+        phase_prefix = prefix.with_name(prefix.name + suffix)
+        write_json(phase_prefix.with_suffix(".context.json"), selected)
+        try:
+            result, trace = bounded_decision(agent, request,
+                runtime.policy["generation_seconds"] if runtime else config["model"].get("timeout_seconds", 600), check)
+        except InvalidModelResponse as exc:
+            write_json(phase_prefix.with_suffix(".model.json"), exc.trace)
+            raise
         check()
         if storage:
             storage.check()
-        write_json(prefix.with_suffix(".model.json"), trace)
-        with memory.connection:
-            memory.scenes.save(context, report, memory.working.current(), progress)
-        print("Scene reassessment saved; no controller input sent", flush=True)
-    except InvalidModelResponse as exc:
-        write_json(prefix.with_suffix(".model.json"), exc.trace)
-        raise
+        write_json(phase_prefix.with_suffix(".model.json"), trace)
+        Draft202012Validator(schema_for_context(selected)).validate(result)
+        return selected, result
+
+    _, perception = generate({"phase": "scene_observation", "observation_id": observation_id}, "-perception")
+    context["perception"] = perception
+    context, report = generate(context)
+    with memory.connection:
+        memory.scenes.save(context, report, memory.working.current(), progress)
+    print("Scene reassessment saved; no controller input sent", flush=True)
 
 
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,

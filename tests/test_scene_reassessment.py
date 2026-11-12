@@ -10,7 +10,7 @@ from unittest.mock import patch
 from jsonschema import Draft202012Validator, ValidationError
 
 from pokemon_harness.agent.prompts import messages
-from pokemon_harness.agent.reassessment import schema, settings
+from pokemon_harness.agent.reassessment import PERCEPTION_FIELDS, schema, settings
 from pokemon_harness.agent.schemas import request_schema, schema_for_context
 from pokemon_harness.config import load_config
 from pokemon_harness.demo import DemoAgent, create_images
@@ -25,14 +25,43 @@ from pokemon_harness.telemetry.recorder import write_json
 
 
 def report(context):
-    return {"observation_id": context["observation_id"], "visible_objects": ["Player among storage boxes"],
+    value = {"observation_id": context["observation_id"], "visible_objects": ["Player among storage boxes"],
         "visible_text": [], "possible_exits": [{"description": "Bright opening on the right", "confidence": "low"}],
         "scene": "overworld", "subgoal_assessment": "contradicted" if context.get("subgoal") else "none",
         "subgoal_explanation": "No professor or selection menu is visible", "stale_scene_fact_ids": [],
         "next_check": "Inspect the open floor toward the bright boundary"}
+    value.update(context.get("perception", {}))
+    return value
+
+
+def perception(context):
+    value = report(context)
+    return {key: value[key] for key in PERCEPTION_FIELDS}
 
 
 class SceneReassessmentTests(unittest.TestCase):
+    def test_observer_has_no_old_goal_and_reconciler_cannot_rewrite_visual_evidence(self):
+        context = {"phase": "scene_observation", "observation_id": 1}
+        observation = perception(context)
+        request = messages(context, b"png")
+        self.assertNotIn("subgoal", json.loads(request[1]["content"][0]["text"]))
+        validator = Draft202012Validator(schema(context))
+        validator.validate(observation)
+        invalid = dict(observation, subgoal_assessment="supported")
+        self.assertFalse(validator.is_valid(invalid))
+        context = self.context()
+        context["perception"] = observation
+        value = report(context)
+        validator = Draft202012Validator(schema(context))
+        validator.validate(value)
+        for key, replacement in (("visible_objects", ["Professor in a lab"]), ("visible_text", ["Choose a starter"]),
+                                 ("possible_exits", []), ("scene", "dialogue")):
+            invalid = dict(value, **{key: replacement})
+            self.assertFalse(validator.is_valid(invalid))
+        context["perception"]["observation_id"] = 99
+        with self.assertRaisesRegex(ValueError, "stale observation"):
+            schema(context)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -208,11 +237,15 @@ class SceneReassessmentTests(unittest.TestCase):
             "emulator": {"backend": "replay"}, "scene_reassessment": {"enabled": True}})
         config = load_config(path)
         phases = []
+        observer_contexts = []
 
         class Agent:
             def decide(self, request):
                 context = json.loads(request[1]["content"][0]["text"])
                 phases.append(context.get("phase", "action"))
+                if context.get("phase") == "scene_observation":
+                    observer_contexts.append(context)
+                    return perception(context), {"backend": "fixture"}
                 if context.get("phase") == "scene_reassessment":
                     return report(context), {"backend": "fixture"}
                 value, trace = DemoAgent().decide(request)
@@ -223,7 +256,9 @@ class SceneReassessmentTests(unittest.TestCase):
         emulator = ReplayEmulator(create_images(self.root / "images"))
         with contextlib.redirect_stdout(io.StringIO()):
             result = run(config, emulator, Agent(), turns=1)
-        self.assertEqual(phases, ["scene_reassessment", "action"])
+        self.assertEqual(phases, ["scene_observation", "scene_reassessment", "action"])
+        for key in ("subgoal", "scene_fact_candidates", "objective", "rules", "goal_token"):
+            self.assertNotIn(key, observer_contexts[0])
         self.assertEqual(emulator.actions, [])
         self.assertEqual(result["reason"], "agent_stop")
 
@@ -240,6 +275,30 @@ class SceneReassessmentTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "Perception failed"):
             run(load_config(path), emulator, Agent(), turns=1)
         self.assertEqual(emulator.actions, [])
+
+    def test_failed_goal_check_does_not_commit_the_successful_visual_pass(self):
+        path = self.root / "config.json"
+        write_json(path, {"run_dir": "failed-goal-check", "objective": "Test", "rules": [], "model": {"name": "fixture"},
+            "emulator": {"backend": "replay"}, "scene_reassessment": {"enabled": True}})
+        config = load_config(path)
+        phases = []
+
+        class Agent:
+            def decide(self, request):
+                context = json.loads(request[1]["content"][0]["text"])
+                phases.append(context["phase"])
+                if context["phase"] == "scene_observation":
+                    return perception(context), {"backend": "fixture"}
+                raise ValueError("Goal check failed")
+
+        emulator = ReplayEmulator(create_images(self.root / "images"))
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "Goal check failed"):
+            run(config, emulator, Agent(), turns=1)
+        self.assertEqual(phases, ["scene_observation", "scene_reassessment"])
+        self.assertEqual(emulator.actions, [])
+        with contextlib.closing(Memory(Path(config["run_dir"]) / "memory.sqlite")) as memory:
+            self.assertIsNone(memory.scenes.latest())
+            self.assertEqual(memory.connection.execute("SELECT COUNT(*) FROM stale_scene_facts").fetchone()[0], 0)
 
     def test_scene_change_and_periodic_checks_respect_turn_intervals(self):
         from test_capture_settling import png
@@ -263,6 +322,9 @@ class SceneReassessmentTests(unittest.TestCase):
         class Agent:
             def decide(self, request):
                 context = json.loads(request[1]["content"][0]["text"])
+                if context.get("phase") == "scene_observation":
+                    phases.append("perception")
+                    return perception(context), {"backend": "fixture"}
                 if context.get("phase") == "scene_reassessment":
                     phases.append("reassessment")
                     return report(context), {"backend": "fixture"}
@@ -282,5 +344,5 @@ class SceneReassessmentTests(unittest.TestCase):
         emulator = ReplayEmulator(create_images(self.root / "images"))
         with contextlib.redirect_stdout(io.StringIO()):
             run(load_config(path), emulator, Agent(), turns=2)
-        self.assertEqual(phases, ["reassessment", "action", "review", "action"])
+        self.assertEqual(phases, ["perception", "reassessment", "action", "review", "action"])
         self.assertEqual(len(emulator.actions), 1)

@@ -468,10 +468,11 @@ using its existing ID. Never reset recovery limits or disregard the run rules.
 
 
 def messages(context, current_image, previous_image=None, sequence_images=None, outcome_images=None):
-    if context.get("phase") == "scene_reassessment":
-        from .reassessment import GUIDE
+    if context.get("phase") in {"scene_observation", "scene_reassessment"}:
+        from .reassessment import GUIDE, OBSERVATION_GUIDE
 
-        return [{"role": "system", "content": GUIDE}, {"role": "user", "content": [
+        guide = OBSERVATION_GUIDE if context["phase"] == "scene_observation" else GUIDE
+        return [{"role": "system", "content": guide}, {"role": "user", "content": [
             {"type": "text", "text": json.dumps(context, ensure_ascii=False)},
             {"type": "text", "text": "Current screenshot for direct visual reassessment:"}, image(current_image)]}]
     content = [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}]

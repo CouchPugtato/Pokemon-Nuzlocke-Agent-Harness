@@ -215,7 +215,7 @@ def recovery_schema(context):
 
 
 def schema_for_context(context):
-    if context.get("phase") == "scene_reassessment":
+    if context.get("phase") in {"scene_observation", "scene_reassessment"}:
         from .reassessment import schema
 
         return schema(context)
