@@ -175,7 +175,8 @@ class ContextBudgetIntegrationTests(unittest.TestCase):
     def test_client_uses_verified_context_and_sends_only_the_effective_output_limit(self):
         agent = LMStudio(self.config["model"])
         agent.loaded_context_length = 65536
-        response = {"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]}
+        value = DemoAgent().decide(messages(context(), b"image"))[0]
+        response = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(value)}}]}
         with patch("pokemon_harness.agent.lmstudio.urlopen") as http:
             http.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode()
             _, trace = agent.decide(messages(context(), b"image"))

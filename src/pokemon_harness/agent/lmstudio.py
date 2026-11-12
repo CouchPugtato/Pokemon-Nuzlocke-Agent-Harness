@@ -6,7 +6,7 @@ import socket
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from .schemas import request_schema
+from .schemas import DECISION_SCHEMA, request_schema
 from jsonschema import Draft202012Validator, ValidationError
 from .context_budget import assess_request, budget_settings, calibrate_usage
 
@@ -151,7 +151,7 @@ class LMStudio:
                                    "or reduce prompt/history")
                 raise ValueError(detail)
             value = json.loads(choice["message"]["content"])
-            if "anyOf" in schema:
+            if schema != DECISION_SCHEMA:
                 Draft202012Validator(schema).validate(value)
         except ValidationError as exc:
             raise InvalidModelResponse(f"Invalid LM Studio phase response: {exc.message[:600]}", trace) from exc

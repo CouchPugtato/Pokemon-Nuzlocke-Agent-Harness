@@ -217,7 +217,14 @@ def recovery_schema(context):
 def schema_for_context(context):
     pending = context.get("outcome_review", {})
     if not pending.get("pending_count"):
-        return recovery_schema(context) if context.get("progress", {}).get("requires_recovery") else DECISION_SCHEMA
+        if context.get("progress", {}).get("requires_recovery"):
+            return recovery_schema(context)
+        if "outcome_review" in context:
+            normal = copy.deepcopy(DECISION_SCHEMA)
+            normal["properties"]["outcome_reviews"] = {"type": "array", "maxItems": 0}
+            normal["properties"]["action"]["properties"]["kind"]["enum"] = ["press", "wait", "search_memory", "stop"]
+            return normal
+        return DECISION_SCHEMA
     plan = pending.get("next_plan")
     if not plan:
         raise ValueError("Pending outcome review has no available plan")

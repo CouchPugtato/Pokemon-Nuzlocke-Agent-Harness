@@ -28,6 +28,31 @@ def review(value):
 
 
 class ReviewSchemaTests(unittest.TestCase):
+    def test_action_phase_excludes_unrequested_review_revisions(self):
+        state = {"observation_id": 23, "outcome_review": {"pending_count": 0, "next_plan": None}}
+        before = copy.deepcopy(DECISION_SCHEMA)
+        schema = schema_for_context(state)
+        validator = Draft202012Validator(schema)
+        value = DemoAgent().decide(messages(state, b"png"))[0]
+        validator.validate(value)
+        value["outcome_reviews"] = review(context())["outcome_reviews"]
+        self.assertFalse(validator.is_valid(value))
+        value["outcome_reviews"] = []
+        value["action"].update(kind="review_outcomes", buttons=[])
+        self.assertFalse(validator.is_valid(value))
+        self.assertEqual(DECISION_SCHEMA, before)
+
+    def test_client_rejects_a_server_that_ignores_the_action_phase_schema(self):
+        state = {"observation_id": 23, "outcome_review": {"pending_count": 0, "next_plan": None}}
+        request = messages(state, b"png")
+        value = DemoAgent().decide(request)[0]
+        value["outcome_reviews"] = review(context())["outcome_reviews"]
+        response = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(value)}}]}).encode()
+        with patch("pokemon_harness.agent.lmstudio.urlopen", return_value=io.BytesIO(response)):
+            with self.assertRaises(InvalidModelResponse) as error:
+                LMStudio({"name": "fixture"}).decide(request)
+        self.assertIn("response", error.exception.trace)
+
     def test_pending_phase_allows_review_or_stop_but_no_input_or_writes(self):
         state = context()
         schema = schema_for_context(state)

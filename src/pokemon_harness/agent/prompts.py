@@ -249,10 +249,11 @@ the attempted steps from the journal, not the remaining planned moves.
 
 Reviewing action outcomes:
 Return outcome_reviews=[] when no review is needed or when searching memory.
-Before a new press or wait plan, review all pending attempted plans. Normally
-there is one: include its review in the same decision as your next controller plan.
-For an older backlog choose action.kind=review_outcomes to save one plan review
-without controller input, then inspect the next fresh request. This action needs
+Before a new press or wait plan, review all pending attempted plans. Choose
+action.kind=review_outcomes to save one plan review without controller input,
+then inspect the next fresh request. When pending_count is zero, return an empty
+outcome_reviews array and do not revise earlier reviews in an action decision.
+Historical revisions use the explicit local review workflow. A review action needs
 no buttons, additional_actions=[], memory_search=null, memory_updates=[], events=[]
 and working_state_update=null. It consumes one review_batches_remaining allowance;
 when zero, stop and resume later if a backlog still prevents a controller plan.
@@ -416,6 +417,10 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
             "The schema excludes prior recovery input signatures, requires a single move, and forbids state and ledger writes. "
             "Only wait tests are allowed in battle, unknown or transition scenes; if no permitted input is safe, stop. "
             "Do not relabel an uncertain scene to unlock an input. Review the test result before proceeding.")})
+    elif "outcome_review" in context:
+        content.append({"type": "text", "text": (
+            "ACTION PHASE: No attempted plan is pending review. Return outcome_reviews=[] and choose a controller plan, "
+            "search_memory or stop. Do not repeat or revise a saved review; historical revisions use the explicit local review workflow.")})
     if context.get("review_correction"):
         content.append({"type": "text", "text": (
             "REVIEW REQUIRED: Your preceding controller proposal was discarded because it omitted a pending outcome review. "
