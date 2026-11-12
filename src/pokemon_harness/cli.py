@@ -85,6 +85,10 @@ def play_run(args):
         if config["emulator"]["backend"] == "replay":
             config["emulator"]["screenshots_dir"] = str(
                 (config_path.resolve().parent / config["emulator"]["screenshots_dir"]).resolve())
+    if args.model is not None:
+        if not args.model.strip():
+            raise ValueError("Model identifier must be nonempty")
+        config["model"]["name"] = args.model.strip()
     if args.context_length is not None:
         config["model"]["context_length"] = args.context_length
     if args.max_tokens is not None:
@@ -116,6 +120,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     play = commands.add_parser("run", help="Start a fresh run using configs/emerald.json by default")
     play.add_argument("--config", type=Path, default=Path("configs/emerald.json"))
+    play.add_argument("--model", help="LM Studio model key or loaded instance identifier")
     play.add_argument("--context-length", type=int, help="LM Studio load-time context size in tokens")
     play.add_argument("--max-tokens", type=int, help="Generation output budget, including reasoning")
     play.add_argument("--thinking", choices=["on", "off"], help="Toggle thinking for compatible model templates")
@@ -130,6 +135,7 @@ def main(argv=None):
     resume.add_argument("run_dir", nargs="?", type=Path)
     resume.add_argument("--runs-dir", type=Path, default=Path("runs"))
     resume.add_argument("--turns", type=int, default=500)
+    resume.add_argument("--model", help="Switch the saved run to another LM Studio model without resetting memory")
     resume.add_argument("--context-length", type=int, help="Override the saved model's load-time context size")
     resume.add_argument("--max-tokens", type=int, help="Override the saved generation output budget")
     resume.add_argument("--thinking", choices=["on", "off"], help="Toggle thinking for compatible model templates")
