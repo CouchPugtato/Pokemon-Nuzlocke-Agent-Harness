@@ -56,6 +56,36 @@ class SamplingEmulator:
 
 
 class CaptureSettlingTests(unittest.TestCase):
+    def test_post_input_delay_prevents_reviewing_a_stable_old_frame(self):
+        clock = FakeClock()
+        black, white = png("black"), png("white")
+
+        class DelayedResponse(SamplingEmulator):
+            def capture(self):
+                self.calls += 1
+                return Capture(white if clock.now >= 0.5 else black, "fixture timing")
+
+        emulator = DelayedResponse([])
+        settings = capture_settings({"capture_settling": {"enabled": True}})
+        capture, report = settled_capture(emulator, settings, scene="dialogue", clock=clock,
+                                         sleep=clock.sleep, after_input=True)
+        self.assertEqual(capture.image, white)
+        self.assertEqual(report["after_input_delay_ms"], 750)
+        self.assertEqual(report["status"], "stable")
+        self.assertGreaterEqual(clock.now, 0.9)
+        self.assertLessEqual(clock.now, 1.0)
+
+    def test_post_input_delay_is_configurable_and_not_applied_to_other_captures(self):
+        settings = capture_settings({"capture_settling": {"enabled": True, "after_input_delay_ms": 100}})
+        for after_input, expected in ((False, 0), (True, 100)):
+            clock = FakeClock()
+            _, report = settled_capture(SamplingEmulator([png("black")]), settings, clock=clock,
+                                        sleep=clock.sleep, after_input=after_input)
+            self.assertEqual(report["after_input_delay_ms"], expected)
+        for value in (-1, 5001, True):
+            with self.assertRaises(ValueError):
+                capture_settings({"capture_settling": {"after_input_delay_ms": value}})
+
     def sample(self, images, scene="unknown", **changes):
         clock = FakeClock()
         emulator = SamplingEmulator(images)

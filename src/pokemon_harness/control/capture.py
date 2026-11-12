@@ -14,7 +14,7 @@ SCENES = {"overworld", "dialogue", "menu", "battle", "transition", "unknown"}
 
 def capture_settings(config):
     result = {"enabled": config.get("emulator", {}).get("backend") in {"vbam", "mgba"},
-              "min_delay_ms": 50, "interval_ms": 75, "max_ms": 750, "max_samples": 8,
+              "min_delay_ms": 50, "after_input_delay_ms": 750, "interval_ms": 75, "max_ms": 750, "max_samples": 8,
               "stable_comparisons": 2, "difference_threshold": 1.0, "masks": [],
               "scene_max_ms": {"battle": 250, "dialogue": 250, "menu": 250, "overworld": 350, "unknown": 350, "transition": 600}}
     value = config.get("capture_settling", {})
@@ -23,7 +23,7 @@ def capture_settings(config):
     result.update(value)
     if type(result["enabled"]) is not bool:
         raise ValueError("capture_settling.enabled must be a boolean")
-    for key, lower, upper in (("min_delay_ms", 0, 2000), ("interval_ms", 1, 1000), ("max_ms", 1, 5000),
+    for key, lower, upper in (("min_delay_ms", 0, 2000), ("after_input_delay_ms", 0, 5000), ("interval_ms", 1, 1000), ("max_ms", 1, 5000),
                               ("max_samples", 1, 32), ("stable_comparisons", 1, 8)):
         if type(result[key]) is not int or not lower <= result[key] <= upper:
             raise ValueError(f"capture_settling.{key} must be an integer between {lower} and {upper}")
@@ -58,9 +58,10 @@ def comparison_image(png, masks):
     return image
 
 
-def settled_capture(emulator, settings, control=None, scene="unknown", clock=time.monotonic, sleep=time.sleep):
+def settled_capture(emulator, settings, control=None, scene="unknown", clock=time.monotonic, sleep=time.sleep, after_input=False):
     started = clock()
-    budget_ms = min(settings["max_ms"], settings["scene_max_ms"].get(scene, settings["max_ms"]))
+    input_delay = settings["after_input_delay_ms"] if settings["enabled"] and after_input else 0
+    budget_ms = input_delay + min(settings["max_ms"], settings["scene_max_ms"].get(scene, settings["max_ms"]))
     deadline = started + budget_ms / 1000
 
     def check():
@@ -81,6 +82,8 @@ def settled_capture(emulator, settings, control=None, scene="unknown", clock=tim
 
     enabled = settings["enabled"]
     if enabled:
+        # allowing the game response before sampling stability
+        wait(input_delay / 1000)
         wait(settings["min_delay_ms"] / 1000)
     previous = None
     stable = 0
@@ -93,6 +96,7 @@ def settled_capture(emulator, settings, control=None, scene="unknown", clock=tim
         return capture, {"schema_version": 1, "status": status, "samples": samples,
             "captured_at": captured_at, "elapsed_ms": round((finished - started) * 1000, 3),
             "last_capture_ms": round((after - before) * 1000, 3), "budget_ms": budget_ms,
+            "after_input_delay_ms": input_delay,
             "deadline_exceeded": enabled and finished > deadline,
             "scene_hint": scene, "policy": settings, "differences": differences, "sample_hashes": sample_hashes,
             "comparison": "full resolution rgb mean absolute difference with configured masks",

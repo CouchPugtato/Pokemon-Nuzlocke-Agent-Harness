@@ -4,6 +4,18 @@ Inspect a stopped run with `pokemon-harness cases --case 1`. Consequential
 Nuzlocke cases still require a linked ledger correction for an evidence resolution.
 A manual assertion or unverifiable continuation remains recorded as unverifiable.
 
+Live captures wait `capture_settling.after_input_delay_ms` after a controller input
+before normal screenshot settling. The default is 750 ms. This gives delayed game
+responses time to become visible before their first review; it does not pause the
+emulator or guarantee that an animation has finished. Initial and read-only captures
+do not receive this extra delay. Stop and focus checks remain active during it.
+
+Pending review screenshots take priority over redundant early captures and optional
+history. When required review images cannot fit, the harness stops before another
+model request or controller plan. It does not discard the comparison needed to
+review an attempted input. Visual similarity checks include local changes across
+the screen, including upper name fields as well as dialogue text.
+
 A false progress stall can instead be resolved from a revised outcome review:
 
 ```powershell

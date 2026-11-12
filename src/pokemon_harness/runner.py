@@ -236,7 +236,8 @@ def _loop(config, emulator, agent, turns, memory, run_dir, recovered, control=No
 def _capture(memory, run_dir, emulator, storage=None, config=None, control=None, scene="unknown", after_input=None):
     if storage:
         storage.check()
-    capture, metadata = settled_capture(emulator, capture_settings(config or {}), control, scene)
+    capture, metadata = settled_capture(emulator, capture_settings(config or {}), control, scene,
+                                        after_input=after_input is not None)
     metadata["after_input"] = after_input
     if storage:
         storage.check(len(capture.image))

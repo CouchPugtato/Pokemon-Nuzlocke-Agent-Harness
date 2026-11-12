@@ -81,7 +81,7 @@ class Outcomes:
             final = attempted[-1]
             captured = self.connection.execute("SELECT * FROM observations WHERE id=?", (final["after_observation_id"],)).fetchone()
             intervened = self.connection.execute(
-                "SELECT 1 FROM turns WHERE id>? AND observation_id<=? LIMIT 1",
+                "SELECT 1 FROM turns WHERE id>? AND observation_id<? LIMIT 1",
                 (turn_id, current["id"] if current else 0)).fetchone()
             interrupted = self.connection.execute(
                 "SELECT 1 FROM notes WHERE kind IN ('session_start','control_handoff','resume_after_handoff','user_stop','recovery') "

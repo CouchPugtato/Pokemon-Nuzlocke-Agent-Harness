@@ -44,18 +44,18 @@ class SignalTests(unittest.TestCase):
         self.assertEqual([signal["kind"] for signal in cycle_signals([frame] * 3)], ["input_cycle"])
 
     def test_coarse_similarity_checks_scene_and_dialogue_separately(self):
-        first = {"scene": [20] * 64, "dialogue": [80] * 64, "dialogue_edges": [1, 2, 3]}
-        second = {"scene": [21] * 64, "dialogue": [79] * 64, "dialogue_edges": [1, 2, 3]}
+        first = {"scene": [20] * 64, "dialogue": [80] * 64, "dialogue_edges": [1, 2, 3], "interface_edges": [[] for _ in range(24)]}
+        second = {"scene": [21] * 64, "dialogue": [79] * 64, "dialogue_edges": [1, 2, 3], "interface_edges": [[] for _ in range(24)]}
         frames = [{"image_hash": str(index), "features": features, "observation_id": index + 1,
                    "signature": (("press", ("A",)),)} for index, features in enumerate([first, second, first])]
         self.assertIn("similar_visual", [signal["kind"] for signal in cycle_signals(frames)])
-        frames[1]["features"] = {"scene": [21] * 64, "dialogue": [120] * 64, "dialogue_edges": [1, 2, 3]}
+        frames[1]["features"] = {"scene": [21] * 64, "dialogue": [120] * 64, "dialogue_edges": [1, 2, 3], "interface_edges": [[] for _ in range(24)]}
         self.assertNotIn("similar_visual", [signal["kind"] for signal in cycle_signals(frames)])
 
     def test_features_and_signatures_use_pixels_and_buttons_without_timing(self):
         png = io.BytesIO()
         Image.new("RGB", (12, 12), (30, 30, 30)).save(png, format="PNG")
-        self.assertEqual(image_features(png.getvalue()), {"scene": [30] * 64, "dialogue": [30] * 64, "dialogue_edges": []})
+        self.assertEqual(image_features(png.getvalue()), {"scene": [30] * 64, "dialogue": [30] * 64, "dialogue_edges": [], "interface_edges": [[] for _ in range(24)]})
         left = {"kind": "press", "buttons": ["B", "A"], "hold_frames": 6, "settle_frames": 0}
         right = dict(left, buttons=["A", "B"], hold_frames=30, settle_frames=20)
         self.assertEqual(input_signature([left]), input_signature([right]))
@@ -81,6 +81,19 @@ class SignalTests(unittest.TestCase):
                    "features": {"scene": [30] * 64, "dialogue": [80] * 64},
                    "signature": (("press", ("A",)),)} for index in range(3)]
         self.assertNotIn("similar_visual", [signal["kind"] for signal in cycle_signals(frames)])
+
+    def test_upper_name_field_changes_are_not_similar_visual_cycles(self):
+        from PIL import ImageDraw
+
+        frames = []
+        for index, text in enumerate(("A", "AA", "AAA")):
+            image = Image.new("RGB", (240, 160), "white")
+            ImageDraw.Draw(image).text((92, 45), text, fill="black")
+            png = io.BytesIO()
+            image.save(png, format="PNG")
+            frames.append({"image_hash": str(index), "observation_id": index + 1,
+                           "features": image_features(png.getvalue()), "signature": (("press", ("A",)),)})
+        self.assertEqual([signal["kind"] for signal in cycle_signals(frames)], ["input_cycle"])
 
 
 class ProgressTests(unittest.TestCase):

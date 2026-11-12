@@ -209,7 +209,10 @@ class OutcomeTests(unittest.TestCase):
         self.memory.status(next_turn, "blocked")
         self.assertEqual(self.memory.outcomes.plan_context(turn, observation)["steps"][0][
             "review_after_observation_ids"], [2, observation])
-        self.assertNotIn("review_after_observation_ids", self.memory.outcomes.plan_context(turn, future)["steps"][0])
+        self.assertEqual(self.memory.outcomes.plan_context(turn, future)["steps"][0][
+            "review_after_observation_ids"], [2, future])
+        later = self.memory.observe("later.png", "later", "test")
+        self.assertNotIn("review_after_observation_ids", self.memory.outcomes.plan_context(turn, later)["steps"][0])
 
     def test_delayed_result_is_not_attributed_across_session_or_handoff(self):
         self.attempted()
@@ -234,6 +237,7 @@ class OutcomeTests(unittest.TestCase):
         value = decision(observation)
         next_turn = self.memory.plan(observation, value)
         self.memory.status(next_turn, "stopped")
+        observation = self.memory.observe("later.png", "later", "test")
         reviews[0]["expected_revision"] = 1
         reviews[0]["steps"][0]["after_observation_id"] = observation
         with self.assertRaisesRegex(ValueError, "recorded step result"):

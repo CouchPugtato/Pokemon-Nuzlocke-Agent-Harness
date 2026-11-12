@@ -37,6 +37,21 @@ def context():
 
 
 class ContextBudgetTests(unittest.TestCase):
+    def test_pending_review_keeps_before_and_latest_delayed_endpoint(self):
+        state = context()
+        state["outcome_review"] = {"pending_count": 1, "next_plan": {
+            "turn_id": 1, "expected_revision": 0, "steps": [{"step_index": 1,
+                "input_status": "completed", "before_observation_id": 19,
+                "after_observation_id": 20, "review_after_observation_ids": [20, 21]}]}}
+        frames = [{"observation_id": i, "image": data, "purpose": "outcome"}
+                  for i, data in ((19, b"before"), (20, b"early"))]
+        model = dict(self.model, context_length=65536)
+        _, _, baseline = fit_request(state, model, b"current", outcome_images=frames)
+        model["context_length"] = baseline["estimated_input_tokens"] + 8192 + 4096 - 1000
+        selected, _, report = fit_request(state, model, b"current", outcome_images=frames)
+        self.assertEqual(selected["outcome_visual_evidence_ids"], [19, 21])
+        self.assertEqual(report["omitted"]["outcome_images"], 1)
+
     def test_compacted_continuity_is_optional_and_does_not_displace_authoritative_state(self):
         original = context()
         original["conversation"] = {"recent": [], "continuity": {
@@ -233,7 +248,7 @@ class ContextBudgetIntegrationTests(unittest.TestCase):
         self.assertLessEqual(report["estimated_input_tokens"], report["input_token_limit"])
         self.assertEqual(selected["outcome_visual_evidence_ids"], [1])
 
-    def test_omitted_evidence_cannot_be_claimed_as_progress_before_another_input(self):
+    def test_oversized_required_review_stops_before_another_request_or_input(self):
         paths = []
         for index in range(21):
             path = self.root / f"frame-{index}.png"
@@ -256,11 +271,10 @@ class ContextBudgetIntegrationTests(unittest.TestCase):
                 return value, trace
 
         emulator = ReplayEmulator(paths)
-        with self.assertRaisesRegex(ValueError, "remain uncertain"):
+        with self.assertRaises(ContextBudgetError):
             run(self.config, emulator, Agent(), turns=2)
         self.assertEqual(len(emulator.actions), 20)
-        self.assertNotIn(1, requests[1]["outcome_visual_evidence_ids"])
-        self.assertGreater(requests[1]["request_budget"]["omitted"]["outcome_images"], 0)
+        self.assertEqual(len(requests), 1)
         with contextlib.closing(Memory(self.directory / "memory.sqlite")) as memory:
             self.assertEqual(len(memory.recent_turns()), 1)
             self.assertEqual(memory.outcomes.pending_count(), 1)

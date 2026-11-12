@@ -18,6 +18,7 @@
   "capture_settling": {
     "enabled": true,
     "min_delay_ms": 50,
+    "after_input_delay_ms": 750,
     "interval_ms": 75,
     "max_ms": 750,
     "max_samples": 8,

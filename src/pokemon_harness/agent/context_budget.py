@@ -103,6 +103,22 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
     sequence = list(sequence_images or [])
     evidence = list(outcome_images or [])
     omissions = {}
+    plan = selected.get("outcome_review", {}).get("next_plan")
+    required = set()
+    for step in plan["steps"] if plan else []:
+        if step["input_status"] not in {"completed", "executing", "unknown"}:
+            continue
+        required.add(step["before_observation_id"])
+        candidates = step.get("review_after_observation_ids", [step["after_observation_id"] or selected["observation_id"]])
+        required.add(max(candidates))
+
+    def trim_evidence():
+        for index, frame in enumerate(evidence):
+            if frame["observation_id"] not in required:
+                evidence.pop(index)
+                omitted("outcome_images")
+                return True
+        return False
 
     def omitted(name, count=1):
         omissions[name] = omissions.get(name, 0) + count
@@ -134,17 +150,16 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
         elif sequence:
             sequence.pop(0)
             omitted("sequence_images")
-        elif any(frame.get("purpose") == "loop" for frame in evidence):
-            index = next(index for index, frame in enumerate(evidence) if frame.get("purpose") == "loop")
+        elif any(frame.get("purpose") == "loop" and frame["observation_id"] not in required for frame in evidence):
+            index = next(index for index, frame in enumerate(evidence) if frame.get("purpose") == "loop" and frame["observation_id"] not in required)
             evidence.pop(index)
             omitted("loop_images")
-        elif any(frame.get("purpose") == "archive" for frame in evidence):
-            index = next(index for index, frame in enumerate(evidence) if frame.get("purpose") == "archive")
+        elif any(frame.get("purpose") == "archive" and frame["observation_id"] not in required for frame in evidence):
+            index = next(index for index, frame in enumerate(evidence) if frame.get("purpose") == "archive" and frame["observation_id"] not in required)
             evidence.pop(index)
             omitted("archive_images")
-        elif len(evidence) > 2:
-            evidence.pop(0)
-            omitted("outcome_images")
+        elif len(evidence) > 2 and trim_evidence():
+            pass
         else:
             return False
         return True
@@ -165,9 +180,7 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
                 previous_image = None
                 omitted("previous_images")
                 continue
-            if evidence:
-                evidence.pop(0)
-                omitted("outcome_images")
+            if trim_evidence():
                 continue
             exc.report["omitted"] = dict(omissions)
             raise
@@ -189,9 +202,7 @@ def fit_request(context, model, current_image, previous_image=None, sequence_ima
                     previous_image = None
                     omitted("previous_images")
                     fitted = False
-                elif evidence:
-                    evidence.pop(0)
-                    omitted("outcome_images")
+                elif trim_evidence():
                     fitted = False
                 else:
                     exc.report["omitted"] = dict(omissions)

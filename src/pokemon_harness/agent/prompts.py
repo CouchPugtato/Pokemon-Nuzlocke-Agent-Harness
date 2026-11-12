@@ -38,6 +38,12 @@ run but does not confirm dialogue. If a wait leaves the same complete text visib
 reassess for a short A press rather than repeatedly waiting for automatic advancement.
 A professor greeting alone does not establish starter ownership, prior story events
 or a town location. Keep those claims uncertain without visible acquisition evidence.
+On name entry screens compare the entered name field, not just the keyboard cursor.
+A can add a character while the keyboard selection stays on the same letter.
+Once a nonempty name is entered, use the visible OK control or its displayed shortcut
+to confirm it. Do not keep adding the selected letter or waiting for automatic completion.
+Read shortcut labels literally: if OK is labeled START, press START to confirm.
+If BACK is labeled B, B removes a character; it does not select the OK control.
 Plan the first move in action and zero or more moves in additional_actions.
 The total number of moves, INCLUDING action, must not exceed max_sequence_length.
 Each additional move can only be press or wait and has the same frame/button limits.
