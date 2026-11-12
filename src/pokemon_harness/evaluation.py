@@ -9,10 +9,11 @@ import tempfile
 import time
 from contextlib import closing
 from pathlib import Path
+from jsonschema import Draft202012Validator
 
 from .agent.prompts import image
 from .agent.lmstudio import LMStudio
-from .agent.schemas import validate_decision
+from .agent.schemas import validate_decision, schema_for_context
 from .agent.context_budget import validate_visual_reviews
 from .control.timing import bounded_decision, TimingLimit
 from .control.loop_detection import input_signature
@@ -86,6 +87,8 @@ def validate_context_gates(decision, context):
     if controller and context.get("review_correction"):
         raise ValueError("Proposal bypasses the archived read only review correction")
     pending = context.get("outcome_review", {})
+    if context.get("grounded_scene_action") and not pending.get("pending_count"):
+        Draft202012Validator(schema_for_context(context)).validate(decision)
     plan = pending.get("next_plan")
     reviews = decision["outcome_reviews"]
     if controller and pending.get("pending_count", 0) and (

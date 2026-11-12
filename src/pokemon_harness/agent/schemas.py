@@ -215,6 +215,10 @@ def recovery_schema(context):
 
 
 def schema_for_context(context):
+    if context.get("phase") == "scene_reassessment":
+        from .reassessment import schema
+
+        return schema(context)
     schema = phase_schema(context)
     if schema is not DECISION_SCHEMA and "observation_id" in context:
         for branch in schema.get("anyOf", [schema]):
@@ -225,6 +229,34 @@ def schema_for_context(context):
 def phase_schema(context):
     pending = context.get("outcome_review", {})
     if not pending.get("pending_count"):
+        if context.get("grounded_scene_action"):
+            restricted = copy.deepcopy(context)
+            restricted["memory_available"] = {"searches_remaining": 0}
+            recovering = restricted.get("progress", {}).get("requires_recovery")
+            if not recovering:
+                restricted["progress"] = {"episode_id": 1, "recovery_attempts_remaining": 1}
+            schema = recovery_schema(restricted)
+            if not recovering:
+                for branch in schema["anyOf"]:
+                    branch["properties"]["recovery_plan"] = {"type": "null"}
+            choices = []
+            for branch in schema["anyOf"]:
+                fields = branch["properties"]
+                if fields["action"]["properties"]["kind"]["enum"] != ["press"]:
+                    choices.append(branch)
+                    continue
+                available = fields["action"]["properties"]["buttons"]["enum"]
+                for directions in (True, False):
+                    buttons = [value for value in available if (value[0] in {"UP", "DOWN", "LEFT", "RIGHT"}) == directions]
+                    if not buttons:
+                        continue
+                    choice = copy.deepcopy(branch)
+                    choice["properties"]["action"]["properties"]["buttons"]["enum"] = buttons
+                    choice["properties"]["strategy"]["properties"]["kind"]["enum"] = (
+                        ["move", "inspect_menu"] if directions else ["inspect_menu", "interact", "advance_dialogue"])
+                    choices.append(choice)
+            schema["anyOf"] = choices
+            return schema
         if context.get("progress", {}).get("requires_recovery"):
             return recovery_schema(context)
         if "outcome_review" in context:

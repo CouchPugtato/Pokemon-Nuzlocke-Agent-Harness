@@ -10,6 +10,7 @@ from .memory.archive import archive_settings
 from .memory.recall import recall_settings
 from .control.capture import capture_settings
 from .control.timing import timing_settings
+from .agent.reassessment import settings as reassessment_settings
 
 
 def load_config(path):
@@ -36,6 +37,7 @@ def load_config(path):
     value["automatic_recall"] = recall_settings(value)
     value["capture_settling"] = capture_settings(value)
     value["timing_budgets"] = timing_settings(value)
+    value["scene_reassessment"] = reassessment_settings(value)
     value.setdefault("max_action_frames", 60)
     value.setdefault("max_sequence_length", 5)
     value.setdefault("sequence_delay_ms", 250)

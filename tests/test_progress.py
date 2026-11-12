@@ -231,6 +231,16 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(context["no_progress_attempts"], 3)
         self.assertTrue(context["requires_recovery"])
 
+    def test_reopening_the_same_interaction_is_not_fresh_progress(self):
+        for _ in range(3):
+            self.attempt("A", "box", prior_assessment="progress_observed")
+        state = self.finish_review("progress_observed")
+        samples, _ = self.memory.progress._samples(8)
+        self.assertTrue(samples[0]["progress"])
+        self.assertFalse(samples[-1]["progress"])
+        self.assertTrue(samples[-1]["repeated_interaction"])
+        self.assertGreaterEqual(state["no_progress_attempts"], 2)
+
     def test_same_pixels_with_claimed_progress_do_not_reset_counter(self):
         self.attempt(prior_assessment="progress_observed")
         self.attempt(prior_assessment="progress_observed")

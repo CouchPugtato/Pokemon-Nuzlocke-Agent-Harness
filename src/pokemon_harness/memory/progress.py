@@ -70,10 +70,14 @@ class Progress:
             ORDER BY t.id DESC LIMIT ?
         """, (window,)).fetchall()
         samples, frames = [], []
+        interaction_pairs = set()
         for turn in reversed(turns):
             plan = self.outcomes.plan_context(turn[0])
             review = self.outcomes.latest(turn[0])
             progress = False
+            repeated_interaction = False
+            decision = json.loads(self.connection.execute("SELECT decision FROM turns WHERE id=?", (turn[0],)).fetchone()[0])
+            interaction = (decision.get("strategy") or {}).get("kind") in {"interact", "advance_dialogue", "inspect_menu"}
             if review and plan["subgoal_memory_validity"] != "invalidated":
                 for step in review["steps"]:
                     if step["assessment"] != "progress_observed":
@@ -82,7 +86,14 @@ class Progress:
                                                      (step["before_observation_id"],)).fetchone()
                     after = self.connection.execute("SELECT image_hash FROM observations WHERE id=?",
                                                     (step["after_observation_id"],)).fetchone()
-                    progress |= bool(before and after and before[0] != after[0])
+                    changed = bool(before and after and before[0] != after[0])
+                    if changed and interaction:
+                        source = next(value for value in plan["steps"] if value["step_index"] == step["step_index"])
+                        pair = (before[0], after[0], input_signature([source["action"]]))
+                        repeated_interaction |= pair in interaction_pairs
+                        changed &= pair not in interaction_pairs
+                        interaction_pairs.add(pair)
+                    progress |= changed
             actions = []
             reviewed = {step["step_index"]: step for step in review["steps"]} if review else {}
             for step in plan["steps"]:
@@ -100,6 +111,7 @@ class Progress:
                                "features": json.loads(row[1]) if row and row[1] else None,
                                "signature": input_signature([step["action"]])})
             samples.append({"turn_id": turn[0], "progress": progress, "reviewed": review is not None,
+                            "repeated_interaction": repeated_interaction,
                             "signature": input_signature(actions)})
         return samples, frames[-window:]
 

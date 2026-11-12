@@ -2,13 +2,17 @@ from pathlib import Path
 import time
 import sys
 import json
+from jsonschema import Draft202012Validator
 
 from .agent.lmstudio import InvalidModelResponse, LMStudio
 from .agent.context_budget import ContextBudgetError, calibration_key, fit_request, validate_visual_reviews
 from .memory.conversation import compaction_settings
 from .memory.archive import archive_settings, retrieve_images
 from .memory.recall import automatic_recall, recall_settings
-from .agent.schemas import MEMORY_CATEGORIES, validate_decision
+from .agent.schemas import MEMORY_CATEGORIES, validate_decision, schema_for_context
+from .agent.reassessment import settings as reassessment_settings
+from .agent.prompts import messages
+from .memory.scenes import goal_token
 from .control.loop_detection import loop_warning
 from .control.capture import capture_settings, settled_capture, capture_age
 from .control.timing import RuntimeBudget, bounded_decision
@@ -246,6 +250,44 @@ def _capture(memory, run_dir, emulator, storage=None, config=None, control=None,
     return capture.image, observation_id, capture.timing
 
 
+def _reassess_scene(config, agent, memory, run_dir, current_image, observation_id, reason,
+                    progress, control=None, runtime=None, storage=None):
+    state = memory.working.current()
+    context = {"phase": "scene_reassessment", "observation_id": observation_id, "reason": reason,
+        "objective": config["objective"], "rules": config["rules"], "subgoal": state["subgoal"],
+        "working_revision": state["revision"], "goal_token": goal_token(state),
+        "scene_fact_candidates": memory.scenes.candidates(memory.facts())}
+    model = agent.config if isinstance(agent, LMStudio) else config["model"]
+    length = agent.loaded_context_length if isinstance(agent, LMStudio) else None
+    context, request, budget = fit_request(context, model, current_image, context_length=length,
+        factor=agent.budget_factor if isinstance(agent, LMStudio) else 1.0)
+    prefix = run_dir / "turns" / f"reassessment-{observation_id:06d}"
+    prefix.parent.mkdir(exist_ok=True)
+    write_json(prefix.with_suffix(".context.json"), context)
+    print(f"Observation {observation_id}: read-only scene reassessment ({reason})...", flush=True)
+
+    def check():
+        if control:
+            control.check()
+        if runtime:
+            runtime.check()
+
+    check()
+    try:
+        report, trace = bounded_decision(agent, request,
+            runtime.policy["generation_seconds"] if runtime else config["model"].get("timeout_seconds", 600), check)
+        check()
+        if storage:
+            storage.check()
+        write_json(prefix.with_suffix(".model.json"), trace)
+        with memory.connection:
+            memory.scenes.save(context, report, memory.working.current(), progress)
+        print("Scene reassessment saved; no controller input sent", flush=True)
+    except InvalidModelResponse as exc:
+        write_json(prefix.with_suffix(".model.json"), exc.trace)
+        raise
+
+
 def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
                      previous_image, observation_id, timing, recovered, sequence_images=None, control=None,
                      intervention=None, storage=None, runtime=None):
@@ -262,7 +304,9 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
     settings = compaction_settings(config)
     compacted = False
     pressure = False
-    for _ in range(budget + review_budget + 3):
+    reassessed = False
+    scene_policy = reassessment_settings(config)
+    for _ in range(budget + review_budget + 4):
         if runtime:
             runtime.check()
         if storage:
@@ -278,7 +322,26 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control)
             sequence_images = []
             print(f"Context compacted at checkpoint {checkpoint_id}; captured a fresh observation", flush=True)
+        if scene_policy["enabled"] and not reassessed:
+            progress = memory.monitor_progress()
+            reason = memory.scenes.reason(observation_id, progress, scene_policy)
+            if reason:
+                _reassess_scene(config, agent, memory, run_dir, current_image, observation_id, reason,
+                                progress, control, runtime, storage)
+                reassessed = True
+                previous_image = current_image
+                current_image, observation_id, timing = _capture(memory, run_dir, emulator, storage, config, control)
+                continue
         recent = memory.recent_turns(config["recent_turns"])
+        scene_report = memory.scenes.latest()
+        if scene_report:
+            for turn in recent:
+                if turn["id"] <= scene_report["context"]["turn_history_watermark"]:
+                    turn["decision"] = dict(turn["decision"], location="", scene="unknown",
+                        observation="Historical interpretation predating the latest visual reassessment")
+                    if turn.get("outcome_review"):
+                        for step in turn["outcome_review"]["steps"]:
+                            step.pop("explanation_excerpt", None)
         location = recent[-1]["decision"].get("location", "") if recent and not recent[-1].get("contradiction_keys") else ""
         checkpoint = memory.conversation.active_checkpoint()
         if checkpoint and "compaction" in checkpoint["payload"]:
@@ -291,6 +354,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             config["memory_limit"], recall_settings(config))
         context = {
             "observation_id": observation_id,
+            "scene_reassessment": memory.scenes.controller_context(observation_id),
+            "grounded_scene_action": bool(scene_report and memory.scenes.watermark() == scene_report["turn_watermark"]),
             "objective": config["objective"], "rules": config["rules"],
             "intervention": intervention,
             "run_review": {"validity": memory.escalations.validity(), "authorized_overrides": [
@@ -330,6 +395,12 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             "warning": loop_warning(memory.hashes()),
             "instruction": "Interpret the screenshots. Search memory if needed, or update evidenced facts and choose a bounded sequence of moves.",
         }
+        if scene_report:
+            context["conversation"]["recent"] = [event for event in context["conversation"].get("recent", [])
+                if (event.get("observation_id") or 0) > scene_report["observation_id"]]
+            context["conversation"].get("continuity", {}).get("reviews", []).clear()
+            if context["grounded_scene_action"]:
+                context["conversation"]["recent"] = []
         traces = run_dir / "turns"
         traces.mkdir(exist_ok=True)
         prefix = traces / f"observation-{observation_id:06d}"
@@ -382,6 +453,8 @@ def _choose_decision(config, emulator, agent, memory, run_dir, current_image,
             memory.budgets.record(key, trace.get("context_budget", {}), observation_id)
             validate_decision(decision, observation_id, config["max_action_frames"],
                               config.get("max_sequence_length", 5))
+            if context.get("grounded_scene_action") and not context["outcome_review"]["pending_count"]:
+                Draft202012Validator(schema_for_context(context)).validate(decision)
             validate_visual_reviews(decision, context)
             kind = decision["action"]["kind"]
             pending = context["outcome_review"]

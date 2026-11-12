@@ -89,6 +89,13 @@ Return exactly the requested JSON decision. A stop action ends this invocation.
 MEMORY_GUIDE_PREFIX = """MEMORY AND INFORMATION GUIDE
 
 Available information:
+- scene_reassessment is a fresh read-only visual report with its observation ID and
+  age. Its direct object/text descriptions take precedence over older scene guesses.
+  Candidate exits remain unconfirmed. It does not prove hidden events or reset rules.
+  A stale subgoal definition is withheld until you explicitly revise or abandon it.
+  Use its existing ID for that transition and ground the new goal in the screenshot.
+  Scene facts marked scene_validity=stale or needs_refresh remain archived but are excluded from
+  automatic recall. Search history to inspect them; do not restore them from memory.
 - Current screenshot and, when available, a labeled previous screenshot. These
   are the only observations of the game. Read party, bag and summary menus to
   discover HP, moves, PP, status and supplies. Unseen values remain unknown.
@@ -427,11 +434,46 @@ Do not send controller input, search memory, change working state, write facts o
 ledger events, resolve contradictions or declare a recovery. Return only the pending
 review or stop, with empty state/dependency writes and null strategy/recovery_plan.
 Outcome reviews are fallible assessments, not independent proof of game events.
+scene_reassessment may identify a scene change or contradict an old subgoal. This
+does not clear the pending review. Assess the recorded input from its before/after
+screenshots, using uncertain when necessary. Do not invent the old dialogue merely
+because it appears in the historical prediction or subgoal.
 
 """ + OUTCOME_GUIDE
 
 
+GROUNDING_GUIDE = """GROUNDED SCENE CHECK
+The scene_reassessment is a fresh but fallible report. Inspect the CURRENT pixels.
+Older scene interpretations have been withheld. Do not reconstruct them or search
+history to recreate a predicted storyline. The old goal may be contradicted.
+Choose one safe visible probe or stop. Memory search and all state/ledger writes
+are unavailable for this first probe. Do not claim the probe has already succeeded.
+Consider the visible player, traversable floor, objects and candidate openings.
+Directional buttons move the player through visible floor space. An interaction
+button acts near the player; it does not move them to a distant door or select an
+unfocused object. For a nonadjacent opening, a short directional probe can inspect
+the route when the floor is clear. Do not interact with a remote target from afar.
+An interior room can be scene=overworld even when its location is unknown. Classify
+the visible game mode separately from a place name; keep genuinely unclear modes unknown.
+When repeated interaction or waiting failed, inspect a different visible affordance
+instead of expecting an absent dialogue or menu to appear. Opening and closing the
+same object text is not new advancement. Candidate exits are not confirmed paths.
+Use strategy to describe the intended test. If progress.requires_recovery is true,
+provide recovery_plan with the current episode_id and an explanation of the new
+input. Existing scene and retry limits still apply; do not relabel uncertainty to
+unlock a press. In battle, unknown or transition only wait or stop is available.
+After the test a fresh review and ordinary planning can revise the stale subgoal
+using its existing ID. Never reset recovery limits or disregard the run rules.
+"""
+
+
 def messages(context, current_image, previous_image=None, sequence_images=None, outcome_images=None):
+    if context.get("phase") == "scene_reassessment":
+        from .reassessment import GUIDE
+
+        return [{"role": "system", "content": GUIDE}, {"role": "user", "content": [
+            {"type": "text", "text": json.dumps(context, ensure_ascii=False)},
+            {"type": "text", "text": "Current screenshot for direct visual reassessment:"}, image(current_image)]}]
     content = [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}]
     if context.get("outcome_review", {}).get("pending_count"):
         content.append({"type": "text", "text": (
@@ -441,6 +483,8 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
             "supplied review_after_observation_ids endpoint when present, otherwise its recorded after ID. "
             "Use uncertain when evidence is missing or ambiguous. Return no memory, event, dependency or working state writes, "
             "and strategy=null, recovery_plan=null. A fresh screenshot and new decision follow the saved review.")})
+    elif context.get("grounded_scene_action"):
+        content.append({"type": "text", "text": "GROUNDING PHASE: Use current visual affordances for one safe probe or stop. Do not search old scene claims."})
     elif context.get("progress", {}).get("requires_recovery"):
         content.append({"type": "text", "text": (
             "RECOVERY PHASE: Normal controller plans are unavailable. Choose one safe alternative input with a non-null "
@@ -482,7 +526,8 @@ def messages(context, current_image, previous_image=None, sequence_images=None, 
         if previous_image != current_image:
             content.append(image(previous_image))
     content.extend([{"type": "text", "text": "Current observation:"}, image(current_image)])
-    guide = REVIEW_GUIDE if context.get("outcome_review", {}).get("pending_count") else MEMORY_GUIDE
+    guide = (REVIEW_GUIDE if context.get("outcome_review", {}).get("pending_count") else
+             GROUNDING_GUIDE if context.get("grounded_scene_action") else MEMORY_GUIDE)
     return [{"role": "system", "content": SYSTEM + "\n\n" + guide},
             {"role": "user", "content": content}]
 

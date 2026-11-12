@@ -45,6 +45,7 @@ def recent_turn_context(turns):
 def retrieve(facts, query, observation_id, limit=24):
     terms = words(query)
     active = [fact for fact in facts if fact["status"] != "resolved"
+              and fact.get("scene_validity") not in {"stale", "needs_refresh"}
               and fact.get("memory_validity") not in {"disputed", "invalidated"}]
 
     def rank(fact):

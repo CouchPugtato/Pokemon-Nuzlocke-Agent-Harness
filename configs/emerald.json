@@ -8,6 +8,13 @@
   "memory_limit": 24,
   "ledger_limit": 24,
   "memory_search_rounds": 3,
+  "scene_reassessment": {
+    "enabled": true,
+    "no_progress_attempts": 2,
+    "scene_change_threshold": 12,
+    "min_turn_interval": 3,
+    "max_turn_interval": 12
+  },
   "timing_budgets": {
     "session_seconds": 3600,
     "run_seconds": 86400,

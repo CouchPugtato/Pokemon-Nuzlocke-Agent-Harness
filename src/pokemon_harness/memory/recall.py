@@ -35,6 +35,7 @@ def terms(value):
 def automatic_recall(facts, events, state, recent, contradictions, objective, observation_id, limit, settings):
     events = [event for event in events if event["evidence_observation_id"] <= observation_id]
     usable = [fact for fact in facts if fact["status"] != "resolved"
+              and fact.get("scene_validity") not in {"stale", "needs_refresh"}
               and fact.get("is_latest", True)
               and fact.get("memory_validity") not in {"disputed", "invalidated"}
               and fact["evidence_observation_id"] <= observation_id]

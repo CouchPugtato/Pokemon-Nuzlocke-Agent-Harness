@@ -11,6 +11,7 @@ from .contradictions import Contradictions
 from .budgets import BudgetCalibration
 from .conversation import Conversation, SOURCE_TABLES, compaction_settings
 from .repetition import Repetition
+from .scenes import Scenes
 from ..control.loop_detection import image_features
 from ..telemetry.cleanup import cleanup_operations
 
@@ -64,6 +65,7 @@ class Memory:
         """)
         self.escalations = Escalations(self.connection)
         self.working = WorkingState(self.connection)
+        self.scenes = Scenes(self.connection)
         self.outcomes = Outcomes(self.connection)
         self.progress = Progress(self.connection, self.outcomes)
         self.escalations.progress = self.progress
@@ -233,7 +235,7 @@ class Memory:
             return self.progress.refresh()
 
     def working_context(self):
-        return self.contradictions.working_context(self.working.current())
+        return self.scenes.working_context(self.contradictions.working_context(self.working.current()))
 
     def _cancel_steps(self, turn_id, error):
         self.connection.execute(
@@ -311,9 +313,9 @@ class Memory:
             WHERE ? OR f.id=latest.id
             ORDER BY f.id DESC
         """, (include_history,)).fetchall()
-        return self.contradictions.annotate_facts([dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
+        return self.scenes.annotate(self.contradictions.annotate_facts([dict(json.loads(row["payload"]), evidence_observation_id=row["observation_id"],
                      recorded_at=row["created_at"], fact_id=row["id"],
-                     is_latest=row["id"] == row["latest_id"]) for row in rows])
+                     is_latest=row["id"] == row["latest_id"]) for row in rows]))
 
     def events(self):
         rows = self.connection.execute("SELECT * FROM events ORDER BY id").fetchall()
@@ -352,6 +354,7 @@ class Memory:
 
     def export(self):
         return {"facts": self.facts(), "events": self.events(), "recent_turns": self.recent_turns(20),
+                "scene_reassessment": self.scenes.latest(),
                 "cases": self.escalations.cases(), "validity": self.escalations.validity(),
                 "working_state": self.working_context(), "outcome_review": self.outcomes.context(),
                 "recent_outcome_reviews": self.outcomes.history(),
